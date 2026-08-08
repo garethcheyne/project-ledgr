@@ -1,0 +1,663 @@
+// Ledgr data model
+//
+// Two rules govern everything here. Both are load-bearing; see docs/adr/.
+//
+//   1. Every tenant-owned row carries householdId, even for single-user
+//      installs. Retrofitting multi-tenancy means touching every query in the
+//      codebase, so it is designed in from the first migration.
+//
+//   2. Bill carries NO vendor and NO category. It points at a Subscription,
+//      which resolves both by date. This is the entire product thesis — it is
+//      what keeps spend history continuous when someone switches providers.
+//      See docs/adr/0003-category-vendor-separation.md before changing it.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated/client"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tenancy
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Household {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  /// ISO 4217. Default for new subscriptions and bills; each row still stores
+  /// its own, so a household can hold multi-currency records.
+  currency  String   @default("NZD") @db.Char(3)
+  timezone  String   @default("Pacific/Auckland")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members        HouseholdMember[]
+  entities       Entity[]
+  categories     Category[]
+  subscriptions  Subscription[]
+  threads        Thread[]
+  communications Communication[]
+  attachments    Attachment[]
+  bills          Bill[]
+  extractionJobs ExtractionJob[]
+  mailAccounts   MailAccount[]
+
+  @@map("households")
+}
+
+model User {
+  id String @id @default(uuid()) @db.Uuid
+  /// Stored lowercased — normalise on write; there is no citext here.
+  email        String   @unique
+  passwordHash String
+  displayName  String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastLoginAt  DateTime?
+
+  memberships   HouseholdMember[]
+  refreshTokens RefreshToken[]
+  accessTokens  PersonalAccessToken[]
+  mailAccounts  MailAccount[]
+
+  @@map("users")
+}
+
+model HouseholdMember {
+  id          String        @id @default(uuid()) @db.Uuid
+  householdId String        @db.Uuid
+  userId      String        @db.Uuid
+  role        HouseholdRole @default(MEMBER)
+  joinedAt    DateTime      @default(now())
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([householdId, userId])
+  @@index([userId])
+  @@map("household_members")
+}
+
+enum HouseholdRole {
+  OWNER
+  ADMIN
+  MEMBER
+  /// Can see the ledger but not modify it.
+  VIEWER
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auth
+//
+// Token-based rather than session-cookie-only, so a native app or CLI is just
+// another bearer. See docs/adr/0002-three-layer-architecture.md.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model RefreshToken {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  /// SHA-256 of the token. The raw value is returned once and never stored —
+  /// a leaked database must not yield usable sessions.
+  tokenHash String   @unique
+  /// Rotation lineage. When a token is used, it is revoked and its successor
+  /// records this id. Reuse of a revoked token means theft: revoke the chain.
+  replacedById String?  @db.Uuid
+  userAgent    String?
+  ipAddress    String?
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+model PersonalAccessToken {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  name   String
+  /// SHA-256, as above.
+  tokenHash  String   @unique
+  /// Short unprefixed fragment shown in the UI so a token is identifiable
+  /// without being reconstructable.
+  tokenHint  String
+  scopes     String[] @default([])
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("personal_access_tokens")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The core model: Category × Entity, joined over time by Subscription
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A vendor or company. Deliberately knows nothing about what it supplies —
+/// that lives on Subscription, so a vendor can supply several categories, and
+/// a category can pass between vendors, without either side being rewritten.
+model Entity {
+  id          String       @id @default(uuid()) @db.Uuid
+  householdId String       @db.Uuid
+  name        String
+  legalName   String?
+  status      EntityStatus @default(ACTIVE)
+
+  /// Alternate spellings seen on receipts and in email — "Octopus Energy NZ",
+  /// "OCTOPUS ENERGY LTD". Used to fuzzy-match extracted vendor names against
+  /// existing entities so the same company doesn't accumulate four records.
+  aliases String[] @default([])
+
+  website     String?
+  email       String?
+  phone       String?
+  /// Domains seen in correspondence, used to attribute inbound mail.
+  emailDomains String[] @default([])
+  accountRef   String?
+  notes        String?
+  metadata     Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household      Household       @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  subscriptions  Subscription[]
+  threads        Thread[]
+  communications Communication[]
+  extractionJobs ExtractionJob[]
+
+  @@unique([householdId, name])
+  @@index([householdId])
+  @@index([householdId, status])
+  @@map("entities")
+}
+
+enum EntityStatus {
+  ACTIVE
+  /// No live subscriptions, but history is retained.
+  INACTIVE
+  ARCHIVED
+}
+
+/// The persistent thing being tracked — "Power", "Broadband", "Home insurance".
+/// Survives every vendor change. This is the axis all reporting hangs off.
+model Category {
+  id          String  @id @default(uuid()) @db.Uuid
+  householdId String  @db.Uuid
+  name        String
+  description String?
+  /// Fluent UI icon name, for the UI.
+  icon  String?
+  /// Hex colour used in charts.
+  color String?
+
+  /// Optional hierarchy — "Utilities" containing "Power" and "Gas".
+  parentId String?    @db.Uuid
+  parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children Category[] @relation("CategoryHierarchy")
+
+  /// True for essential/recurring services; used to separate "bills" from
+  /// discretionary subscriptions in reporting.
+  isEssential Boolean @default(false)
+  sortOrder   Int     @default(0)
+  metadata    Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household      Household       @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  subscriptions  Subscription[]
+  extractionJobs ExtractionJob[]
+
+  @@unique([householdId, name])
+  @@index([householdId])
+  @@index([parentId])
+  @@map("categories")
+}
+
+/// The join that makes the product work: which Entity supplied which Category,
+/// over which dates.
+///
+/// A vendor switch is a single transaction — set endDate on the open
+/// subscription, insert a new one with the same categoryId and a different
+/// entityId. Spend history stays continuous because Bills resolve through
+/// here; the switch itself becomes a queryable row rather than a gap you have
+/// to infer from bill patterns.
+model Subscription {
+  id          String @id @default(uuid()) @db.Uuid
+  householdId String @db.Uuid
+  entityId    String @db.Uuid
+  categoryId  String @db.Uuid
+
+  /// Half-open interval [startDate, endDate). A null endDate means current.
+  /// At most one open subscription per (household, category) — enforced in the
+  /// service layer today; a Postgres exclusion constraint is the eventual home
+  /// for it, once btree_gist is in the migration set.
+  startDate DateTime  @db.Date
+  endDate   DateTime? @db.Date
+
+  status SubscriptionStatus @default(ACTIVE)
+
+  /// Expected recurring amount. Actual charges live on Bill; this is what the
+  /// plan says it should be, which is what makes "you're being overcharged"
+  /// answerable.
+  expectedAmount Decimal?      @db.Decimal(14, 2)
+  currency       String        @default("NZD") @db.Char(3)
+  billingCycle   BillingCycle  @default(MONTHLY)
+  /// Day of month a bill is expected — drives "this is overdue" detection.
+  billingDay     Int?
+
+  accountNumber String?
+  planName      String?
+  contractEndsAt DateTime? @db.Date
+  noticePeriodDays Int?
+
+  /// Why this subscription ended. Free text on purpose — "switched to cheaper
+  /// plan", "moved house", "company went under".
+  endReason String?
+  notes     String?
+  metadata  Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  entity    Entity    @relation(fields: [entityId], references: [id], onDelete: Restrict)
+  category  Category  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  bills     Bill[]
+
+  @@index([householdId])
+  @@index([householdId, categoryId, startDate])
+  @@index([householdId, entityId])
+  @@index([categoryId, startDate, endDate])
+  @@map("subscriptions")
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  /// Temporarily suspended but not switched away from.
+  PAUSED
+  /// Closed because the household switched to a different vendor.
+  SWITCHED
+  /// Closed because the household stopped using the category entirely.
+  CANCELLED
+}
+
+enum BillingCycle {
+  WEEKLY
+  FORTNIGHTLY
+  MONTHLY
+  BIMONTHLY
+  QUARTERLY
+  BIANNUAL
+  ANNUAL
+  /// Usage-based or irregular.
+  IRREGULAR
+  ONE_OFF
+}
+
+/// A bill or receipt.
+///
+/// NOTE THE ABSENCE: there is no entityId and no categoryId here, and adding
+/// one would silently break vendor-switch continuity — the denormalised column
+/// and the subscription could disagree, and nothing would report it.
+/// Vendor and category resolve through subscriptionId.
+model Bill {
+  id             String @id @default(uuid()) @db.Uuid
+  householdId    String @db.Uuid
+  subscriptionId String @db.Uuid
+
+  /// Date the vendor issued it.
+  issueDate DateTime @db.Date
+  dueDate   DateTime? @db.Date
+  /// The service period this bill covers — not the same as issueDate, and the
+  /// distinction matters for "spend in FY2025".
+  periodStart DateTime? @db.Date
+  periodEnd   DateTime? @db.Date
+
+  amount   Decimal @db.Decimal(14, 2)
+  taxAmount Decimal? @db.Decimal(14, 2)
+  currency String  @default("NZD") @db.Char(3)
+
+  status        BillStatus @default(UNPAID)
+  paidAt        DateTime?
+  invoiceNumber String?
+
+  /// Set when this row was created by confirming an extraction rather than
+  /// typed by hand — lets us measure how good extraction actually is.
+  extractionJobId String? @unique @db.Uuid
+
+  notes    String?
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household     Household      @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  subscription  Subscription   @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  extractionJob ExtractionJob? @relation(fields: [extractionJobId], references: [id], onDelete: SetNull)
+  attachments   Attachment[]
+
+  @@index([householdId])
+  @@index([householdId, issueDate])
+  @@index([subscriptionId, issueDate])
+  @@index([householdId, status])
+  @@map("bills")
+}
+
+enum BillStatus {
+  UNPAID
+  PAID
+  OVERDUE
+  DISPUTED
+  /// Superseded by a corrected bill from the vendor.
+  VOID
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Relationship half: threads, communications, attachments
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A trackable issue with a vendor — "boiler warranty dispute", "billing error
+/// March 2026". The unit you actually want to follow, as opposed to individual
+/// emails.
+model Thread {
+  id          String       @id @default(uuid()) @db.Uuid
+  householdId String       @db.Uuid
+  entityId    String?      @db.Uuid
+  title       String
+  status      ThreadStatus @default(OPEN)
+  priority    ThreadPriority @default(NORMAL)
+  summary     String?
+  /// Set when we're waiting on the vendor and want to be reminded.
+  followUpAt  DateTime?
+  resolvedAt  DateTime?
+  metadata    Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household      Household       @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  entity         Entity?         @relation(fields: [entityId], references: [id], onDelete: SetNull)
+  communications Communication[]
+
+  @@index([householdId])
+  @@index([householdId, status])
+  @@index([entityId])
+  @@map("threads")
+}
+
+enum ThreadStatus {
+  OPEN
+  /// Waiting on the vendor to respond.
+  AWAITING_VENDOR
+  /// Waiting on us.
+  AWAITING_US
+  RESOLVED
+  ABANDONED
+}
+
+enum ThreadPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+/// Normalised log of an email, call, letter, or note. Email is read-only:
+/// Ledgr links and extracts, it does not compose or reimplement SMTP.
+model Communication {
+  id          String  @id @default(uuid()) @db.Uuid
+  householdId String  @db.Uuid
+  entityId    String? @db.Uuid
+  threadId    String? @db.Uuid
+
+  type      CommunicationType
+  direction CommunicationDirection
+
+  subject  String?
+  body     String?
+  bodyHtml String?
+  /// Plain-text preview for list views without loading the full body.
+  snippet  String?
+
+  occurredAt DateTime
+
+  /// RFC822 Message-ID. Unique per household so an IMAP reconnect or a re-sync
+  /// can never double-insert the same email.
+  messageId String?
+  /// RFC822 In-Reply-To, for reconstructing mail threading.
+  inReplyTo String?
+  /// Provider-side identifier (IMAP UID, CalDAV href).
+  externalId String?
+  /// Which mail account this arrived through.
+  mailAccountId String? @db.Uuid
+
+  fromAddress String?
+  toAddresses String[] @default([])
+  ccAddresses String[] @default([])
+
+  isRead   Boolean @default(false)
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household   Household    @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  entity      Entity?      @relation(fields: [entityId], references: [id], onDelete: SetNull)
+  thread      Thread?      @relation(fields: [threadId], references: [id], onDelete: SetNull)
+  mailAccount MailAccount? @relation(fields: [mailAccountId], references: [id], onDelete: SetNull)
+  attachments Attachment[]
+
+  @@unique([householdId, messageId])
+  @@index([householdId])
+  @@index([householdId, occurredAt])
+  @@index([entityId, occurredAt])
+  @@index([threadId])
+  @@map("communications")
+}
+
+enum CommunicationType {
+  EMAIL
+  PHONE_CALL
+  SMS
+  LETTER
+  MEETING
+  /// Something typed straight into Ledgr.
+  NOTE
+  CHAT
+}
+
+enum CommunicationDirection {
+  INBOUND
+  OUTBOUND
+  /// Notes and meetings have no direction.
+  INTERNAL
+}
+
+/// A stored file. Bytes live in MinIO/S3; this row is the metadata and the key.
+model Attachment {
+  id          String @id @default(uuid()) @db.Uuid
+  householdId String @db.Uuid
+
+  filename    String
+  contentType String
+  sizeBytes   Int
+  /// Object key in the S3 bucket.
+  storageKey  String @unique
+  /// SHA-256 of the content, for dedupe — the same receipt often arrives by
+  /// email and gets uploaded by hand.
+  checksum    String?
+
+  tag AttachmentTag @default(OTHER)
+
+  communicationId String? @db.Uuid
+  billId          String? @db.Uuid
+
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household      Household       @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  communication  Communication?  @relation(fields: [communicationId], references: [id], onDelete: SetNull)
+  bill           Bill?           @relation(fields: [billId], references: [id], onDelete: SetNull)
+  extractionJobs ExtractionJob[]
+
+  @@index([householdId])
+  @@index([householdId, tag])
+  @@index([communicationId])
+  @@index([billId])
+  @@index([householdId, checksum])
+  @@map("attachments")
+}
+
+enum AttachmentTag {
+  RECEIPT
+  INVOICE
+  CONTRACT
+  STATEMENT
+  CORRESPONDENCE
+  WARRANTY
+  OTHER
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sync
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// An IMAP/CalDAV account to sync. Protocol-based rather than vendor-API-based,
+/// so Gmail, Fastmail, iCloud and self-hosted all work through one code path.
+model MailAccount {
+  id          String @id @default(uuid()) @db.Uuid
+  householdId String @db.Uuid
+  userId      String @db.Uuid
+
+  displayName String
+  protocol    MailProtocol @default(IMAP)
+  host        String
+  port        Int
+  username    String
+  /// Encrypted at rest with the application key, not hashed — the worker has
+  /// to be able to present it to the server.
+  passwordEncrypted String
+  useTls            Boolean @default(true)
+
+  /// Folders to watch. Empty means INBOX only.
+  folders String[] @default([])
+
+  /// False when the server refuses IDLE and we fall back to interval polling.
+  supportsIdle Boolean @default(true)
+
+  status         SyncStatus @default(PENDING)
+  lastSyncAt     DateTime?
+  lastSyncError  String?
+  /// IMAP UIDVALIDITY. If the server changes this, cached UIDs are meaningless
+  /// and the folder must be resynced from scratch.
+  uidValidity    BigInt?
+  lastSeenUid    BigInt?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household      Household       @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  communications Communication[]
+
+  @@index([householdId])
+  @@index([userId])
+  @@map("mail_accounts")
+}
+
+enum MailProtocol {
+  IMAP
+  CALDAV
+  CARDDAV
+}
+
+enum SyncStatus {
+  PENDING
+  CONNECTED
+  SYNCING
+  ERROR
+  DISABLED
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OCR + AI extraction
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One run of the OCR → LLM pipeline over an attachment.
+///
+/// This table exists so that extraction NEVER writes a Bill directly. Results
+/// land here in PENDING_REVIEW and wait for a human. Auto-categorisation is a
+/// suggestion; a ledger should not silently acquire rows nobody approved.
+model ExtractionJob {
+  id           String @id @default(uuid()) @db.Uuid
+  householdId  String @db.Uuid
+  attachmentId String @db.Uuid
+
+  status ExtractionStatus @default(QUEUED)
+
+  /// Raw Tesseract output, kept so a failed extraction still leaves something
+  /// usable for manual entry.
+  ocrText       String?
+  ocrConfidence Float?
+
+  /// Model output, validated against the shared Zod schema in
+  /// @ledgr/contracts before being written here.
+  extracted Json?
+  /// Model self-reported confidence, used to sort the review queue so the
+  /// doubtful ones surface first.
+  confidence Float?
+  model      String?
+
+  /// What the model proposed, pre-confirmation.
+  suggestedEntityId   String? @db.Uuid
+  suggestedCategoryId String? @db.Uuid
+  /// Trigram similarity of the extracted vendor string to the matched entity.
+  entityMatchScore    Float?
+  /// Vendor name as it literally appeared on the document.
+  rawVendorName       String?
+
+  errorMessage String?
+  reviewedAt   DateTime?
+  reviewedBy   String?   @db.Uuid
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household         Household  @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  attachment        Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+  suggestedEntity   Entity?    @relation(fields: [suggestedEntityId], references: [id], onDelete: SetNull)
+  suggestedCategory Category?  @relation(fields: [suggestedCategoryId], references: [id], onDelete: SetNull)
+  bill              Bill?
+
+  @@index([householdId])
+  @@index([householdId, status])
+  @@index([attachmentId])
+  @@map("extraction_jobs")
+}
+
+enum ExtractionStatus {
+  QUEUED
+  RUNNING_OCR
+  RUNNING_EXTRACTION
+  /// Extraction succeeded and is waiting for a human. The only path to a Bill.
+  PENDING_REVIEW
+  CONFIRMED
+  REJECTED
+  FAILED
+}

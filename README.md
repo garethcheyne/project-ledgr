@@ -1,8 +1,8 @@
 # Ledgr
 
-An open-source, self-hostable **personal CRM** that tracks your relationships, communication, and finances with the companies and vendors in your life.
+An open-source, self-hostable **personal CRM** that tracks your relationships, communication, and finances with the companies and vendors in your life — with a full email client built in, so you can actually live in it.
 
-Not a sales CRM. Not an email client.
+Not a sales CRM.
 
 > **Status: pre-alpha.** The scaffold boots and the data model is settled; features are landing phase by phase (see [Roadmap](#roadmap)). Not yet ready to trust with real data.
 
@@ -25,7 +25,7 @@ On top of that sits the relationship half: threads for ongoing issues ("the boil
 No existing tool combines all of these. The closest in each column, for the record:
 
 | Capability | Ledgr | Closest alternative |
-|---|:---:|---|
+| --- | :---: | --- |
 | Relationship / communication tracking | ✅ | Monica — people-focused, no finance or vendor tracking, manual entry only |
 | Category-vs-vendor subscription tracking | ✅ | Wallos — household support, but no category/vendor separation |
 | OCR + AI receipt extraction | ✅ | SubOS — small and early |
@@ -33,6 +33,26 @@ No existing tool combines all of these. The closest in each column, for the reco
 | Email + calendar sync over open protocols | ✅ | — |
 
 Traditional open-source CRMs (SuiteCRM, EspoCRM, Corteza) are sales-pipeline shaped, which is explicitly not this.
+
+## The email client
+
+Ledgr is a real mail client, not a mail *reader*. Inbox, threads, compose, reply, forward, drafts, folders and labels, search, and send — with every message linked to the vendor, thread, subscription or bill it belongs to.
+
+That linkage is the point. Replying to your power company from inside Ledgr logs the reply against the power company, in the dispute thread, next to the bill it's about. Replying from Gmail logs it nowhere.
+
+**Connecting an account** — click *Connect*, consent, done:
+
+| Provider | How | Also brings |
+| --- | --- | --- |
+| Gmail / Google Workspace | Gmail API, OAuth | Calendar + contacts, same consent |
+| Outlook.com / Microsoft 365 | Microsoft Graph, OAuth | Calendar + contacts, same consent |
+| Fastmail, iCloud, Proton Bridge, self-hosted | IMAP + SMTP, app password | CalDAV / CardDAV separately |
+
+Native provider APIs are used where they exist, because IMAP can't compete on threading, search, push notifications, or getting sent mail into the Sent folder reliably — see [ADR 0008](docs/adr/0008-native-provider-apis.md). IMAP stays fully supported, since most self-hosted mail has no API.
+
+> **Self-hosting note.** Google and Microsoft connections need OAuth client credentials in `.env`. Until Ledgr completes Google's security assessment for restricted Gmail scopes, that means [registering your own app](docs/setup/google-oauth.md) — roughly ten minutes, once. Providers with no credentials configured simply don't appear on the connect screen. IMAP needs none of this.
+
+Ledgr does **not** run a mail server. It connects to the mailbox you already have: no MX records, no inbound MTA, no deliverability reputation to manage.
 
 ## Architecture
 
@@ -64,20 +84,22 @@ Three decoupled layers, so that adding a native mobile app later is *"just anoth
 
 Two deliberate constraints:
 
-- **The sync layer speaks protocols, not vendor APIs.** IMAP, CalDAV, CardDAV — so Gmail, Fastmail, iCloud, and self-hosted mail all work through one code path instead of one OAuth integration each.
-- **Email is read-only, and stays that way.** Ledgr links, extracts, and files. It does not compose, thread, or reimplement SMTP. That boundary is what stops this becoming "build an email client" instead of "build a personal CRM".
+- **Mail access sits behind one adapter interface.** Gmail API, Microsoft Graph, and IMAP/SMTP are three implementations of the same contract, verified by a shared conformance test suite. Nothing above the interface knows which provider it's talking to.
+- **Ledgr connects to your mailbox; it is not a mail server.** No MX records, no inbound MTA, no spam filtering, no deliverability reputation. That is the boundary that keeps the scope finite, and it isn't up for revision.
 
 ## Stack
 
 | Layer | Choice |
-|---|---|
+| --- | --- |
 | Web | Next.js 16 (App Router) + Fluent UI v9 |
 | Core API | NestJS 11, JWT bearer auth |
 | Sync worker | NestJS standalone + BullMQ |
 | Database | PostgreSQL 17 + Prisma 7 |
 | Attachments | MinIO (S3-compatible) |
+| Mail | Gmail API · Microsoft Graph · IMAP/SMTP behind one adapter |
 | OCR | Tesseract |
 | Extraction | Claude (`claude-opus-5`) with structured outputs |
+| Encryption | AES-256-GCM column encryption, envelope keys |
 
 ## Quick start
 
@@ -121,17 +143,30 @@ The extraction step proposes a vendor, amount, billing period, and category. **I
 
 Auto-categorisation is a suggestion. Your ledger should not silently acquire rows you didn't approve.
 
+## Security
+
+- **Column-level encryption at rest.** AES-256-GCM with envelope keys — a per-household data key wrapped by a master key, so rotating the master rewraps a handful of keys instead of rewriting the database. Mail credentials, OAuth refresh tokens, message bodies, attachment bytes, OCR text and notes are all encrypted before they reach Postgres or MinIO. A stolen dump or backup file is ciphertext. ([ADR 0006](docs/adr/0006-encryption-at-rest.md))
+- **Encrypted, tested backups.** Scheduled `pg_dump` plus MinIO sync, encrypted with age, local by default with an optional remote target. `verify-backup.sh` restores into a throwaway container and decrypts a sample to prove the key still matches — because a restore that succeeds and produces unreadable data is the failure nobody notices. ([ADR 0007](docs/adr/0007-backup-and-disaster-recovery.md))
+
+> **Back up your encryption key, separately from your data.** Without it, your backups are noise. This is the most likely way to lose a Ledgr install: perfect nightly archives, no copy of the key. `scripts/export-keys.sh` exists for exactly this, and deliberately makes you do it by hand.
+
+Column encryption defends against stolen dumps, leaked backups and disk theft. It does **not** defend against a compromised API process, which necessarily holds the key.
+
 ## Roadmap
 
-| Phase | Scope | State |
-|---|---|---|
-| 1 | Monorepo scaffold, CI, licensing | 🔨 |
-| 2 | Data model, migrations, compose stack | ⬜ |
-| 3 | **Finance core** — entities, categories, subscriptions, bills, vendor switching | ⬜ |
-| 4 | Communications, threads, attachments, IMAP sync | ⬜ |
-| 5 | OCR + AI extraction + review queue | ⬜ |
+Email first, deliberately — it's the half you use every day, so it's the half that makes the app worth opening.
 
-Phase 3 is the first genuinely usable release: the category-vs-vendor model works end to end without sync or OCR ever being switched on.
+| Phase | Scope | State |
+| --- | --- | --- |
+| 1 | Monorepo scaffold, CI, licensing | ✅ |
+| 2 | Data model, encryption, migrations, compose stack, backups | 🔨 |
+| 3 | **Email client** — OAuth connect, sync, inbox, threads, compose, send, drafts | ⬜ |
+| 4 | Entities and threads — linking correspondence to the vendors it's about | ⬜ |
+| 5 | **Finance core** — categories, subscriptions, bills, vendor switching | ⬜ |
+| 6 | OCR + AI extraction + review queue | ⬜ |
+| 7 | Calendar + contacts sync | ⬜ |
+
+Phase 3 is the first release worth living in. Phase 5 is where the category-vs-vendor thesis becomes real.
 
 Deferred on purpose: SaaS hosting (same codebase, different deployment profile) and native mobile (responsive PWA first, native only if usage justifies it).
 
