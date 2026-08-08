@@ -1,8 +1,15 @@
-// Prisma 7 does not auto-load .env for the config file — without this, every
-// CLI invocation reports DATABASE_URL as missing.
-import "dotenv/config";
 import path from "node:path";
+import { config as loadEnv } from "dotenv";
 import { defineConfig, env } from "prisma/config";
+
+// Prisma 7 does not auto-load .env for the config file — without this every CLI
+// invocation reports DATABASE_URL as missing. The monorepo keeps a single .env
+// at the root, but the CLI runs with cwd inside packages/db, so check both.
+// First match wins; dotenv never overwrites an already-set variable.
+loadEnv({
+  path: [path.resolve(process.cwd(), ".env"), path.resolve(process.cwd(), "../../.env")],
+  quiet: true,
+});
 
 /**
  * Prisma 7 configuration.
