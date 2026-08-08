@@ -1,0 +1,25 @@
+# Normalise line endings so a Windows checkout can't break Linux containers.
+# Without this, a CRLF shell script fails inside a container with the deeply
+# unhelpful "bad interpreter: No such file or directory".
+* text=auto eol=lf
+
+# Files that must be LF regardless of platform — these run in containers.
+*.sh            text eol=lf
+Dockerfile*     text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+
+# Binary — never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+
+# Generated: collapse in PR diffs.
+pnpm-lock.yaml    linguist-generated=true -diff
+packages/db/generated/** linguist-generated=true

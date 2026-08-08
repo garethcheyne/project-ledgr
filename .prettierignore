@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+.next/
+.turbo/
+coverage/
+generated/
+pnpm-lock.yaml
+LICENSE
+
+# Prisma files use the prisma formatter (`prisma format`), not prettier.
+*.prisma

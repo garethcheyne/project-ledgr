@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# Prisma generated client (regenerated from schema; never committed)
+packages/db/generated/
+
+# Turborepo
+.turbo/
+
+# Environment — .env.example IS committed, real .env files are not
+.env
+.env.*
+!.env.example
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Docker local volumes
+.docker-data/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# VSCode: keep shared settings, ignore personal/telemetry files
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+copilot-usage-*.json
+
+# Local scratch
+tmp/
+scratch/
