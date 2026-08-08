@@ -33,4 +33,4 @@ It's also the established answer for this shape of project — Cal.com and Grafa
 
 - `LICENSE` contains the verbatim AGPL-3.0 text. Package manifests declare `AGPL-3.0-only`.
 - A future hosted Ledgr runs the same codebase under a different deployment profile. No relicensing needed — we hold the copyright on our own work and the AGPL doesn't restrict the copyright holder.
-- Contributions are accepted under AGPL-3.0-only (stated in CONTRIBUTING.md). No CLA for now; if dual-licensing ever becomes necessary, that requires a CLA introduced *before* outside contributions arrive, so revisit this deliberately rather than by drift.
+- Contributions are accepted under AGPL-3.0-only (stated in CONTRIBUTING.md). No CLA for now; if dual-licensing ever becomes necessary, that requires a CLA introduced _before_ outside contributions arrive, so revisit this deliberately rather than by drift.

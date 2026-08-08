@@ -8,12 +8,12 @@ Not a sales CRM.
 
 ## The idea
 
-Every subscription tracker conflates two different things: **what you're paying for** and **who you're paying**. So the day you switch from one power company to another, your spending history breaks in half. You lose the answer to the only question that matters — *"am I spending more on power than I was two years ago?"*
+Every subscription tracker conflates two different things: **what you're paying for** and **who you're paying**. So the day you switch from one power company to another, your spending history breaks in half. You lose the answer to the only question that matters — _"am I spending more on power than I was two years ago?"_
 
 Ledgr separates them:
 
-- **Category** — the persistent thing you're tracking. *Power.* *Broadband.* *Home insurance.*
-- **Entity** — the vendor you currently pay for it. *Octopus Energy.*
+- **Category** — the persistent thing you're tracking. _Power._ _Broadband._ _Home insurance._
+- **Entity** — the vendor you currently pay for it. _Octopus Energy._
 - **Subscription** — a dated link between the two.
 
 Switching providers closes one Subscription and opens another under the same Category. Spend continuity survives, and the switch itself becomes a first-class, graphable event rather than a gap in your records.
@@ -24,29 +24,29 @@ On top of that sits the relationship half: threads for ongoing issues ("the boil
 
 No existing tool combines all of these. The closest in each column, for the record:
 
-| Capability | Ledgr | Closest alternative |
-| --- | :---: | --- |
-| Relationship / communication tracking | ✅ | Monica — people-focused, no finance or vendor tracking, manual entry only |
-| Category-vs-vendor subscription tracking | ✅ | Wallos — household support, but no category/vendor separation |
-| OCR + AI receipt extraction | ✅ | SubOS — small and early |
-| Household multi-tenancy | ✅ | Wallos |
-| Email + calendar sync over open protocols | ✅ | — |
+| Capability                                | Ledgr | Closest alternative                                                       |
+| ----------------------------------------- | :---: | ------------------------------------------------------------------------- |
+| Relationship / communication tracking     |  ✅   | Monica — people-focused, no finance or vendor tracking, manual entry only |
+| Category-vs-vendor subscription tracking  |  ✅   | Wallos — household support, but no category/vendor separation             |
+| OCR + AI receipt extraction               |  ✅   | SubOS — small and early                                                   |
+| Household multi-tenancy                   |  ✅   | Wallos                                                                    |
+| Email + calendar sync over open protocols |  ✅   | —                                                                         |
 
 Traditional open-source CRMs (SuiteCRM, EspoCRM, Corteza) are sales-pipeline shaped, which is explicitly not this.
 
 ## The email client
 
-Ledgr is a real mail client, not a mail *reader*. Inbox, threads, compose, reply, forward, drafts, folders and labels, search, and send — with every message linked to the vendor, thread, subscription or bill it belongs to.
+Ledgr is a real mail client, not a mail _reader_. Inbox, threads, compose, reply, forward, drafts, folders and labels, search, and send — with every message linked to the vendor, thread, subscription or bill it belongs to.
 
 That linkage is the point. Replying to your power company from inside Ledgr logs the reply against the power company, in the dispute thread, next to the bill it's about. Replying from Gmail logs it nowhere.
 
-**Connecting an account** — click *Connect*, consent, done:
+**Connecting an account** — click _Connect_, consent, done:
 
-| Provider | How | Also brings |
-| --- | --- | --- |
-| Gmail / Google Workspace | Gmail API, OAuth | Calendar + contacts, same consent |
-| Outlook.com / Microsoft 365 | Microsoft Graph, OAuth | Calendar + contacts, same consent |
-| Fastmail, iCloud, Proton Bridge, self-hosted | IMAP + SMTP, app password | CalDAV / CardDAV separately |
+| Provider                                     | How                       | Also brings                       |
+| -------------------------------------------- | ------------------------- | --------------------------------- |
+| Gmail / Google Workspace                     | Gmail API, OAuth          | Calendar + contacts, same consent |
+| Outlook.com / Microsoft 365                  | Microsoft Graph, OAuth    | Calendar + contacts, same consent |
+| Fastmail, iCloud, Proton Bridge, self-hosted | IMAP + SMTP, app password | CalDAV / CardDAV separately       |
 
 Native provider APIs are used where they exist, because IMAP can't compete on threading, search, push notifications, or getting sent mail into the Sent folder reliably — see [ADR 0008](docs/adr/0008-native-provider-apis.md). IMAP stays fully supported, since most self-hosted mail has no API.
 
@@ -56,7 +56,7 @@ Ledgr does **not** run a mail server. It connects to the mailbox you already hav
 
 ## Architecture
 
-Three decoupled layers, so that adding a native mobile app later is *"just another client"* rather than a rewrite.
+Three decoupled layers, so that adding a native mobile app later is _"just another client"_ rather than a rewrite.
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌────────────────┐
@@ -89,17 +89,17 @@ Two deliberate constraints:
 
 ## Stack
 
-| Layer | Choice |
-| --- | --- |
-| Web | Next.js 16 (App Router) + Fluent UI v9 |
-| Core API | NestJS 11, JWT bearer auth |
-| Sync worker | NestJS standalone + BullMQ |
-| Database | PostgreSQL 17 + Prisma 7 |
-| Attachments | MinIO (S3-compatible) |
-| Mail | Gmail API · Microsoft Graph · IMAP/SMTP behind one adapter |
-| OCR | Tesseract |
-| Extraction | Claude (`claude-opus-5`) with structured outputs |
-| Encryption | AES-256-GCM column encryption, envelope keys |
+| Layer       | Choice                                                     |
+| ----------- | ---------------------------------------------------------- |
+| Web         | Next.js 16 (App Router) + Fluent UI v9                     |
+| Core API    | NestJS 11, JWT bearer auth                                 |
+| Sync worker | NestJS standalone + BullMQ                                 |
+| Database    | PostgreSQL 17 + Prisma 7                                   |
+| Attachments | MinIO (S3-compatible)                                      |
+| Mail        | Gmail API · Microsoft Graph · IMAP/SMTP behind one adapter |
+| OCR         | Tesseract                                                  |
+| Extraction  | Claude (`claude-opus-5`) with structured outputs           |
+| Encryption  | AES-256-GCM column encryption, envelope keys               |
 
 ## Quick start
 
@@ -156,15 +156,15 @@ Column encryption defends against stolen dumps, leaked backups and disk theft. I
 
 Email first, deliberately — it's the half you use every day, so it's the half that makes the app worth opening.
 
-| Phase | Scope | State |
-| --- | --- | --- |
-| 1 | Monorepo scaffold, CI, licensing | ✅ |
-| 2 | Data model, encryption, migrations, compose stack, backups | 🔨 |
-| 3 | **Email client** — OAuth connect, sync, inbox, threads, compose, send, drafts | ⬜ |
-| 4 | Entities and threads — linking correspondence to the vendors it's about | ⬜ |
-| 5 | **Finance core** — categories, subscriptions, bills, vendor switching | ⬜ |
-| 6 | OCR + AI extraction + review queue | ⬜ |
-| 7 | Calendar + contacts sync | ⬜ |
+| Phase | Scope                                                                         | State |
+| ----- | ----------------------------------------------------------------------------- | ----- |
+| 1     | Monorepo scaffold, CI, licensing                                              | ✅    |
+| 2     | Data model, encryption, migrations, compose stack, backups                    | 🔨    |
+| 3     | **Email client** — OAuth connect, sync, inbox, threads, compose, send, drafts | ⬜    |
+| 4     | Entities and threads — linking correspondence to the vendors it's about       | ⬜    |
+| 5     | **Finance core** — categories, subscriptions, bills, vendor switching         | ⬜    |
+| 6     | OCR + AI extraction + review queue                                            | ⬜    |
+| 7     | Calendar + contacts sync                                                      | ⬜    |
 
 Phase 3 is the first release worth living in. Phase 5 is where the category-vs-vendor thesis becomes real.
 

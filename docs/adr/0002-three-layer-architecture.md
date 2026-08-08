@@ -7,7 +7,7 @@
 
 Next.js can host a backend. Server Actions, route handlers, and direct database access from server components make it entirely possible to build Ledgr as a single Next application with Prisma imported straight into the web app. That is the path of least resistance and it would work.
 
-PROJECT.md also states a goal that quietly rules it out: a native mobile app later should be *"just another client, not a rewrite."*
+PROJECT.md also states a goal that quietly rules it out: a native mobile app later should be _"just another client, not a rewrite."_
 
 ## Decision
 

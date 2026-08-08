@@ -1,6 +1,6 @@
 // Ledgr data model
 //
-// Two rules govern everything here. Both are load-bearing; see docs/adr/.
+// Four rules govern everything here. All are load-bearing; see docs/adr/.
 //
 //   1. Every tenant-owned row carries householdId, even for single-user
 //      installs. Retrofitting multi-tenancy means touching every query in the
@@ -8,8 +8,18 @@
 //
 //   2. Bill carries NO vendor and NO category. It points at a Subscription,
 //      which resolves both by date. This is the entire product thesis — it is
-//      what keeps spend history continuous when someone switches providers.
-//      See docs/adr/0003-category-vendor-separation.md before changing it.
+//      what keeps spend history continuous across a vendor switch.
+//      See docs/adr/0003-category-vendor-separation.md.
+//
+//   3. Fields suffixed `Enc` are AES-256-GCM ciphertext written by the crypto
+//      Prisma extension, never by hand. Fields suffixed `Idx` are HMAC blind
+//      indexes enabling exact-match lookup over encrypted data.
+//      See docs/adr/0006-encryption-at-rest.md.
+//
+//   4. Mail is accessed through one adapter interface with three
+//      implementations (Gmail API, Microsoft Graph, IMAP). Provider-specific
+//      columns are nullable rather than split into separate tables.
+//      See docs/adr/0008-native-provider-apis.md.
 
 generator client {
   provider     = "prisma-client"
@@ -17,9 +27,11 @@ generator client {
   moduleFormat = "cjs"
 }
 
+// Prisma 7 removed `url` from the datasource block. The connection string for
+// Migrate lives in prisma.config.ts, and the runtime client is constructed with
+// a driver adapter (@prisma/adapter-pg) rather than an engine-managed pool.
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27,37 +39,44 @@ datasource db {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Household {
-  id        String   @id @default(uuid()) @db.Uuid
-  name      String
+  id       String @id @default(uuid()) @db.Uuid
+  name     String
   /// ISO 4217. Default for new subscriptions and bills; each row still stores
   /// its own, so a household can hold multi-currency records.
-  currency  String   @default("NZD") @db.Char(3)
-  timezone  String   @default("Pacific/Auckland")
+  currency String @default("NZD") @db.Char(3)
+  timezone String @default("Pacific/Auckland")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  dataKeys       HouseholdDataKey[]
   members        HouseholdMember[]
+  mailAccounts   MailAccount[]
+  mailFolders    MailFolder[]
+  mailThreads    MailThread[]
+  messages       Message[]
+  drafts         Draft[]
+  outbound       OutboundMessage[]
   entities       Entity[]
   categories     Category[]
   subscriptions  Subscription[]
-  threads        Thread[]
+  cases          Case[]
   communications Communication[]
   attachments    Attachment[]
   bills          Bill[]
   extractionJobs ExtractionJob[]
-  mailAccounts   MailAccount[]
 
   @@map("households")
 }
 
 model User {
-  id String @id @default(uuid()) @db.Uuid
   /// Stored lowercased — normalise on write; there is no citext here.
-  email        String   @unique
+  id           String    @id @default(uuid()) @db.Uuid
+  email        String    @unique
   passwordHash String
   displayName  String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
   lastLoginAt  DateTime?
 
   memberships   HouseholdMember[]
@@ -92,6 +111,40 @@ enum HouseholdRole {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Encryption keys (envelope scheme)
+//
+// Rows are encrypted with a per-household data key (DEK). The DEK is itself
+// encrypted by the master key (KEK) from LEDGR_ENCRYPTION_KEY, so rotating the
+// master rewraps a handful of DEKs instead of rewriting every row.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model HouseholdDataKey {
+  id          String @id @default(uuid()) @db.Uuid
+  householdId String @db.Uuid
+  /// Incrementing per household. Every ciphertext records the version that
+  /// produced it, so rotation is incremental and old rows stay readable.
+  version     Int
+  /// The DEK, encrypted under the master key. Never leaves the API process
+  /// in plaintext.
+  wrappedKey  Bytes
+  /// Which master key version wrapped this DEK.
+  kekVersion  Int    @default(1)
+  /// Separate key for HMAC blind indexes, wrapped the same way. Kept distinct
+  /// from the encryption key so an index-key compromise cannot decrypt data.
+  wrappedIndexKey Bytes
+
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  retiredAt DateTime?
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+
+  @@unique([householdId, version])
+  @@index([householdId, isActive])
+  @@map("household_data_keys")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Auth
 //
 // Token-based rather than session-cookie-only, so a native app or CLI is just
@@ -103,15 +156,16 @@ model RefreshToken {
   userId String @db.Uuid
   /// SHA-256 of the token. The raw value is returned once and never stored —
   /// a leaked database must not yield usable sessions.
-  tokenHash String   @unique
-  /// Rotation lineage. When a token is used, it is revoked and its successor
+  tokenHash String @unique
+  /// Rotation lineage. When a token is used it is revoked and its successor
   /// records this id. Reuse of a revoked token means theft: revoke the chain.
-  replacedById String?  @db.Uuid
-  userAgent    String?
-  ipAddress    String?
-  expiresAt    DateTime
-  revokedAt    DateTime?
-  createdAt    DateTime  @default(now())
+  replacedById String? @db.Uuid
+
+  userAgent String?
+  ipAddress String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -121,15 +175,15 @@ model RefreshToken {
 }
 
 model PersonalAccessToken {
-  id     String @id @default(uuid()) @db.Uuid
-  userId String @db.Uuid
-  name   String
-  /// SHA-256, as above.
-  tokenHash  String   @unique
-  /// Short unprefixed fragment shown in the UI so a token is identifiable
-  /// without being reconstructable.
-  tokenHint  String
-  scopes     String[] @default([])
+  id        String @id @default(uuid()) @db.Uuid
+  userId    String @db.Uuid
+  name      String
+  tokenHash String @unique
+  /// Short fragment shown in the UI so a token is identifiable without being
+  /// reconstructable.
+  tokenHint String
+
+  scopes     String[]  @default([])
   lastUsedAt DateTime?
   expiresAt  DateTime?
   revokedAt  DateTime?
@@ -142,7 +196,420 @@ model PersonalAccessToken {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The core model: Category × Entity, joined over time by Subscription
+// Mail accounts
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A connected mailbox. One row per provider account.
+///
+/// Gmail and Graph use OAuth; IMAP uses a password. All credential columns are
+/// encrypted — an OAuth refresh token is a long-lived credential to an entire
+/// mailbox, and a leaked Ledgr database must not yield mailbox access.
+model MailAccount {
+  id          String @id @default(uuid()) @db.Uuid
+  householdId String @db.Uuid
+  userId      String @db.Uuid
+
+  provider    MailProvider
+  displayName String
+  /// The mailbox address. Not encrypted — needed for routing and dedupe.
+  emailAddress String
+
+  // ── OAuth (GOOGLE, MICROSOFT) ─────────────────────────────────────────────
+  accessTokenEnc  Bytes?
+  refreshTokenEnc Bytes?
+  tokenExpiresAt  DateTime?
+  grantedScopes   String[]  @default([])
+  /// Provider's stable account identifier, for detecting a re-auth against a
+  /// different account than the one originally connected.
+  providerAccountId String?
+
+  // ── IMAP / SMTP ───────────────────────────────────────────────────────────
+  imapHost     String?
+  imapPort     Int?
+  imapUseTls   Boolean @default(true)
+  smtpHost     String?
+  smtpPort     Int?
+  smtpUseTls   Boolean @default(true)
+  username     String?
+  passwordEnc  Bytes?
+  /// False when the server refuses IDLE and we fall back to interval polling.
+  supportsIdle Boolean @default(true)
+
+  // ── Sync state ────────────────────────────────────────────────────────────
+  status        SyncStatus @default(PENDING)
+  lastSyncAt    DateTime?
+  lastSyncError String?
+  /// Gmail historyId / Graph deltaLink. Opaque provider cursor for incremental
+  /// sync; null forces a full resync.
+  syncCursor    String?
+  /// Push subscription id and expiry (Gmail watch / Graph subscription). Both
+  /// expire and must be renewed on a schedule.
+  pushSubscriptionId String?
+  pushExpiresAt      DateTime?
+
+  /// Which encryption key version wrote this row's ciphertext.
+  keyVersion Int @default(1)
+
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household Household         @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folders   MailFolder[]
+  threads   MailThread[]
+  messages  Message[]
+  drafts    Draft[]
+  outbound  OutboundMessage[]
+
+  @@unique([householdId, provider, emailAddress])
+  @@index([householdId])
+  @@index([userId])
+  @@index([status])
+  @@map("mail_accounts")
+}
+
+enum MailProvider {
+  GOOGLE
+  MICROSOFT
+  IMAP
+}
+
+enum SyncStatus {
+  PENDING
+  CONNECTED
+  SYNCING
+  ERROR
+  /// Credentials rejected — needs the user to reconnect.
+  REAUTH_REQUIRED
+  DISABLED
+}
+
+/// A folder (IMAP) or label (Gmail) or mailFolder (Graph).
+///
+/// uidValidity lives HERE and not on the account: it is a per-folder value in
+/// IMAP, and putting it on the account silently corrupts multi-folder sync.
+model MailFolder {
+  id            String @id @default(uuid()) @db.Uuid
+  householdId   String @db.Uuid
+  mailAccountId String @db.Uuid
+
+  /// Provider's own id — Gmail label id, Graph folder id, IMAP path.
+  providerFolderId String
+  name             String
+  /// Normalised role, so the UI can find the inbox without string-matching
+  /// names across providers and languages.
+  role             FolderRole @default(CUSTOM)
+
+  parentId String?      @db.Uuid
+  parent   MailFolder?  @relation("FolderHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children MailFolder[] @relation("FolderHierarchy")
+
+  /// IMAP only. If the server changes this, cached UIDs are meaningless and
+  /// the folder must be resynced from scratch.
+  uidValidity BigInt?
+  lastSeenUid BigInt?
+  /// Per-folder incremental cursor where the provider offers one.
+  syncCursor  String?
+  lastSyncAt  DateTime?
+
+  totalCount  Int @default(0)
+  unreadCount Int @default(0)
+
+  /// Whether to sync this folder at all. Big archives can be opted out of.
+  isSubscribed Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household   Household   @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  mailAccount MailAccount @relation(fields: [mailAccountId], references: [id], onDelete: Cascade)
+  messages    Message[]
+  drafts      Draft[]
+
+  @@unique([mailAccountId, providerFolderId])
+  @@index([householdId])
+  @@index([mailAccountId, role])
+  @@map("mail_folders")
+}
+
+enum FolderRole {
+  INBOX
+  SENT
+  DRAFTS
+  TRASH
+  SPAM
+  ARCHIVE
+  STARRED
+  IMPORTANT
+  CUSTOM
+}
+
+/// A conversation.
+///
+/// Gmail and Graph supply an authoritative thread id, so this is a direct
+/// mapping. IMAP has none, so the adapter derives one from References /
+/// In-Reply-To chains with a subject+time fallback — the single largest source
+/// of "why is this email in the wrong conversation" bugs.
+model MailThread {
+  id            String @id @default(uuid()) @db.Uuid
+  householdId   String @db.Uuid
+  mailAccountId String @db.Uuid
+
+  /// Provider thread id where one exists; a synthesised stable id for IMAP.
+  providerThreadId String
+  /// True when the id was derived by us rather than given by the provider,
+  /// so threading bugs are attributable.
+  isSynthetic      Boolean @default(false)
+
+  subjectEnc Bytes?
+  /// Normalised subject (re:/fwd: stripped, lowercased) HMAC'd, for grouping
+  /// IMAP messages that lack usable References headers.
+  subjectIdx String?
+
+  messageCount    Int      @default(0)
+  unreadCount     Int      @default(0)
+  hasAttachments  Boolean  @default(false)
+  lastMessageAt   DateTime
+  /// Denormalised for list rendering without loading every message.
+  participantsEnc Bytes?
+
+  /// CRM linkage — which vendor and which dispute this conversation is about.
+  entityId String? @db.Uuid
+  caseId   String? @db.Uuid
+
+  keyVersion Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household   Household   @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  mailAccount MailAccount @relation(fields: [mailAccountId], references: [id], onDelete: Cascade)
+  entity      Entity?     @relation(fields: [entityId], references: [id], onDelete: SetNull)
+  case        Case?       @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  messages    Message[]
+
+  @@unique([mailAccountId, providerThreadId])
+  @@index([householdId, lastMessageAt])
+  @@index([entityId])
+  @@index([caseId])
+  @@index([subjectIdx])
+  @@map("mail_threads")
+}
+
+/// A single email, at full fidelity.
+///
+/// Deliberately separate from Communication: cramming email, phone calls and
+/// handwritten notes into one table makes it wide and sparse, and the mail
+/// client is the part that has to stay fast.
+model Message {
+  id            String @id @default(uuid()) @db.Uuid
+  householdId   String @db.Uuid
+  mailAccountId String @db.Uuid
+  folderId      String? @db.Uuid
+  mailThreadId  String? @db.Uuid
+
+  /// Provider's message id. Gmail id, Graph id, or IMAP UID rendered as text.
+  providerMessageId String
+  /// IMAP UID as a number, for range fetches. Null for API providers.
+  uid               BigInt?
+
+  /// RFC 5322 Message-ID. Unique per account so a resync can never
+  /// double-insert the same message.
+  messageIdHeader String?
+  inReplyTo       String?
+  references      String[] @default([])
+
+  // ── Content (encrypted) ───────────────────────────────────────────────────
+  subjectEnc  Bytes?
+  bodyTextEnc Bytes?
+  bodyHtmlEnc Bytes?
+  /// Short preview for list views, so rendering the inbox doesn't decrypt
+  /// every full body.
+  snippetEnc  Bytes?
+
+  // ── Participants (encrypted, with blind indexes for exact-match filtering)
+  fromAddressEnc Bytes?
+  /// HMAC of the lowercased from-address. Enables "all mail from this vendor"
+  /// without decrypting the table.
+  fromAddressIdx String?
+  fromNameEnc    Bytes?
+  toEnc          Bytes?
+  ccEnc          Bytes?
+  bccEnc         Bytes?
+  replyToEnc     Bytes?
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  sentAt         DateTime
+  receivedAt     DateTime
+  isRead         Boolean  @default(false)
+  isStarred      Boolean  @default(false)
+  isDraft        Boolean  @default(false)
+  isSent         Boolean  @default(false)
+  hasAttachments Boolean  @default(false)
+  sizeBytes      Int?
+  /// Provider-native labels/categories we don't model natively.
+  providerLabels String[] @default([])
+
+  /// CRM linkage.
+  entityId String? @db.Uuid
+  caseId   String? @db.Uuid
+
+  keyVersion Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household   Household           @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  mailAccount MailAccount         @relation(fields: [mailAccountId], references: [id], onDelete: Cascade)
+  folder      MailFolder?         @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  mailThread  MailThread?         @relation(fields: [mailThreadId], references: [id], onDelete: SetNull)
+  entity      Entity?             @relation(fields: [entityId], references: [id], onDelete: SetNull)
+  case        Case?               @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  attachments Attachment[]
+  searchTerms MessageSearchTerm[]
+
+  @@unique([mailAccountId, providerMessageId])
+  @@unique([mailAccountId, messageIdHeader])
+  @@index([householdId, receivedAt])
+  @@index([mailThreadId, sentAt])
+  @@index([folderId, receivedAt])
+  @@index([householdId, isRead])
+  @@index([fromAddressIdx])
+  @@index([entityId])
+  @@index([caseId])
+  @@map("messages")
+}
+
+/// Word-level search over encrypted mail.
+///
+/// Encrypted columns can't be indexed or scanned, so full-text search would
+/// otherwise mean decrypting every message per query. Instead each message's
+/// subject and body are tokenised, normalised and HMAC'd, and the hashes are
+/// indexed here.
+///
+/// This buys exact whole-word matching. It does NOT support prefix, substring,
+/// fuzzy or phrase search, and it leaks word-frequency statistics to anyone
+/// who can read the table. Both limitations are accepted deliberately; see
+/// docs/adr/0006-encryption-at-rest.md.
+model MessageSearchTerm {
+  messageId   String @db.Uuid
+  householdId String @db.Uuid
+  /// HMAC-SHA256 of the normalised token, truncated to 16 bytes.
+  termHash    Bytes
+  /// Where it occurred, so subject matches can outrank body matches.
+  field       SearchField @default(BODY)
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, termHash, field])
+  @@index([householdId, termHash])
+  @@map("message_search_terms")
+}
+
+enum SearchField {
+  SUBJECT
+  BODY
+  PARTICIPANT
+}
+
+/// A message being composed. Separate from Message so an unsent draft can be
+/// incomplete — no recipients, no subject, no valid MIME — without every read
+/// path needing to handle half-built rows.
+model Draft {
+  id            String  @id @default(uuid()) @db.Uuid
+  householdId   String  @db.Uuid
+  mailAccountId String  @db.Uuid
+  folderId      String? @db.Uuid
+
+  /// Set when the provider is also storing this draft, so edits sync both ways.
+  providerDraftId String?
+
+  /// What this draft is replying to or forwarding, so the References chain can
+  /// be built correctly at send time.
+  inReplyToMessageId String? @db.Uuid
+  forwardOfMessageId String? @db.Uuid
+  mailThreadId       String? @db.Uuid
+
+  subjectEnc  Bytes?
+  bodyTextEnc Bytes?
+  bodyHtmlEnc Bytes?
+  toEnc       Bytes?
+  ccEnc       Bytes?
+  bccEnc      Bytes?
+
+  keyVersion Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household   Household    @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  mailAccount MailAccount  @relation(fields: [mailAccountId], references: [id], onDelete: Cascade)
+  folder      MailFolder?  @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  attachments Attachment[]
+
+  @@index([householdId, updatedAt])
+  @@index([mailAccountId])
+  @@map("drafts")
+}
+
+/// An outbound send, with durable delivery state.
+///
+/// Sending is a queued job with an explicit status, never a fire-and-forget
+/// call in a request handler — a failed send must be visible and retryable
+/// rather than silently gone. See docs/adr/0005-full-email-client.md.
+model OutboundMessage {
+  id            String @id @default(uuid()) @db.Uuid
+  householdId   String @db.Uuid
+  mailAccountId String @db.Uuid
+
+  status   OutboundStatus @default(QUEUED)
+  attempts Int            @default(0)
+  /// When to next attempt delivery. Also powers undo-send: queue a few
+  /// seconds out and let the user cancel before it fires.
+  sendAfter DateTime @default(now())
+
+  /// Fully rendered MIME, encrypted. Built once so a retry cannot produce a
+  /// different message than the first attempt.
+  rawMimeEnc Bytes?
+  subjectEnc Bytes?
+  toEnc      Bytes?
+
+  /// Set once accepted by the provider.
+  providerMessageId String?
+  sentAt            DateTime?
+  /// Whether the sent copy has been filed into the Sent folder. IMAP needs a
+  /// manual APPEND; some servers do it themselves, so this tracks which
+  /// happened and prevents duplicates.
+  sentCopyFiled     Boolean @default(false)
+
+  lastError String?
+
+  keyVersion Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household   Household   @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  mailAccount MailAccount @relation(fields: [mailAccountId], references: [id], onDelete: Cascade)
+
+  @@index([householdId])
+  @@index([status, sendAfter])
+  @@map("outbound_messages")
+}
+
+enum OutboundStatus {
+  QUEUED
+  SENDING
+  SENT
+  /// Delivered but not yet copied into Sent.
+  AWAITING_FILE
+  FAILED
+  CANCELLED
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRM: entities, cases, non-email communications
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A vendor or company. Deliberately knows nothing about what it supplies —
@@ -156,26 +623,31 @@ model Entity {
   status      EntityStatus @default(ACTIVE)
 
   /// Alternate spellings seen on receipts and in email — "Octopus Energy NZ",
-  /// "OCTOPUS ENERGY LTD". Used to fuzzy-match extracted vendor names against
-  /// existing entities so the same company doesn't accumulate four records.
+  /// "OCTOPUS ENERGY LTD". Used to fuzzy-match extracted vendor names so the
+  /// same company doesn't accumulate four records.
   aliases String[] @default([])
-
-  website     String?
-  email       String?
-  phone       String?
-  /// Domains seen in correspondence, used to attribute inbound mail.
+  /// Domains seen in correspondence, used to attribute inbound mail to a
+  /// vendor automatically.
   emailDomains String[] @default([])
-  accountRef   String?
-  notes        String?
-  metadata     Json?
+
+  website    String?
+  email      String?
+  phone      String?
+  accountRef String?
+  notesEnc   Bytes?
+  metadata   Json?
+
+  keyVersion Int @default(1)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   household      Household       @relation(fields: [householdId], references: [id], onDelete: Cascade)
   subscriptions  Subscription[]
-  threads        Thread[]
+  cases          Case[]
   communications Communication[]
+  mailThreads    MailThread[]
+  messages       Message[]
   extractionJobs ExtractionJob[]
 
   @@unique([householdId, name])
@@ -191,6 +663,171 @@ enum EntityStatus {
   ARCHIVED
 }
 
+/// A trackable issue with a vendor — "boiler warranty dispute", "billing error
+/// March 2026". Surfaced in the UI as a "thread"; named Case in the schema to
+/// avoid colliding with MailThread, which means something quite different.
+model Case {
+  id          String       @id @default(uuid()) @db.Uuid
+  householdId String       @db.Uuid
+  entityId    String?      @db.Uuid
+  title       String
+  status      CaseStatus   @default(OPEN)
+  priority    CasePriority @default(NORMAL)
+  summaryEnc  Bytes?
+
+  /// Set when we're waiting on the vendor and want reminding.
+  followUpAt DateTime?
+  resolvedAt DateTime?
+  metadata   Json?
+
+  keyVersion Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household      Household       @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  entity         Entity?         @relation(fields: [entityId], references: [id], onDelete: SetNull)
+  communications Communication[]
+  mailThreads    MailThread[]
+  messages       Message[]
+
+  @@index([householdId])
+  @@index([householdId, status])
+  @@index([entityId])
+  @@map("cases")
+}
+
+enum CaseStatus {
+  OPEN
+  AWAITING_VENDOR
+  AWAITING_US
+  RESOLVED
+  ABANDONED
+}
+
+enum CasePriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+/// A non-email interaction: phone call, letter, meeting, or a note typed
+/// straight into Ledgr. Email lives in Message; this is everything else, so
+/// neither table is mostly-null.
+model Communication {
+  id          String  @id @default(uuid()) @db.Uuid
+  householdId String  @db.Uuid
+  entityId    String? @db.Uuid
+  caseId      String? @db.Uuid
+
+  type      CommunicationType
+  direction CommunicationDirection @default(INTERNAL)
+
+  subjectEnc Bytes?
+  bodyEnc    Bytes?
+
+  occurredAt   DateTime
+  durationMins Int?
+  metadata     Json?
+
+  keyVersion Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household   Household    @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  entity      Entity?      @relation(fields: [entityId], references: [id], onDelete: SetNull)
+  case        Case?        @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  attachments Attachment[]
+
+  @@index([householdId, occurredAt])
+  @@index([entityId, occurredAt])
+  @@index([caseId])
+  @@map("communications")
+}
+
+enum CommunicationType {
+  PHONE_CALL
+  SMS
+  LETTER
+  MEETING
+  NOTE
+  CHAT
+}
+
+enum CommunicationDirection {
+  INBOUND
+  OUTBOUND
+  /// Notes and meetings have no direction.
+  INTERNAL
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Attachments
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A stored file. Bytes live in MinIO/S3, encrypted before upload; this row is
+/// the metadata and the object key.
+model Attachment {
+  id          String @id @default(uuid()) @db.Uuid
+  householdId String @db.Uuid
+
+  filename    String
+  contentType String
+  sizeBytes   Int
+  /// Object key in the S3 bucket.
+  storageKey  String @unique
+  /// SHA-256 of the plaintext, for dedupe — the same receipt often arrives by
+  /// email and is also uploaded by hand.
+  checksum    String?
+  /// Content-ID for inline images referenced by cid: in HTML bodies.
+  contentId   String?
+  isInline    Boolean @default(false)
+
+  tag AttachmentTag @default(OTHER)
+
+  messageId       String? @db.Uuid
+  draftId         String? @db.Uuid
+  communicationId String? @db.Uuid
+  billId          String? @db.Uuid
+
+  keyVersion Int @default(1)
+
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household      Household       @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  message        Message?        @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  draft          Draft?          @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  communication  Communication?  @relation(fields: [communicationId], references: [id], onDelete: SetNull)
+  bill           Bill?           @relation(fields: [billId], references: [id], onDelete: SetNull)
+  extractionJobs ExtractionJob[]
+
+  @@index([householdId])
+  @@index([householdId, tag])
+  @@index([messageId])
+  @@index([draftId])
+  @@index([billId])
+  @@index([householdId, checksum])
+  @@map("attachments")
+}
+
+enum AttachmentTag {
+  RECEIPT
+  INVOICE
+  CONTRACT
+  STATEMENT
+  CORRESPONDENCE
+  WARRANTY
+  OTHER
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The core finance model: Category × Entity, joined over time by Subscription
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// The persistent thing being tracked — "Power", "Broadband", "Home insurance".
 /// Survives every vendor change. This is the axis all reporting hangs off.
 model Category {
@@ -198,18 +835,18 @@ model Category {
   householdId String  @db.Uuid
   name        String
   description String?
-  /// Fluent UI icon name, for the UI.
-  icon  String?
+  /// Fluent UI icon name.
+  icon        String?
   /// Hex colour used in charts.
-  color String?
+  color       String?
 
   /// Optional hierarchy — "Utilities" containing "Power" and "Gas".
   parentId String?    @db.Uuid
   parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
   children Category[] @relation("CategoryHierarchy")
 
-  /// True for essential/recurring services; used to separate "bills" from
-  /// discretionary subscriptions in reporting.
+  /// True for essential/recurring services; separates bills from discretionary
+  /// subscriptions in reporting.
   isEssential Boolean @default(false)
   sortOrder   Int     @default(0)
   metadata    Json?
@@ -230,18 +867,17 @@ model Category {
 /// The join that makes the product work: which Entity supplied which Category,
 /// over which dates.
 ///
-/// A vendor switch is a single transaction — set endDate on the open
-/// subscription, insert a new one with the same categoryId and a different
-/// entityId. Spend history stays continuous because Bills resolve through
-/// here; the switch itself becomes a queryable row rather than a gap you have
-/// to infer from bill patterns.
+/// A vendor switch is one transaction — set endDate on the open subscription,
+/// insert a new one with the same categoryId and a different entityId. Spend
+/// history stays continuous because Bills resolve through here, and the switch
+/// becomes a queryable row rather than a gap inferred from bill patterns.
 model Subscription {
   id          String @id @default(uuid()) @db.Uuid
   householdId String @db.Uuid
   entityId    String @db.Uuid
   categoryId  String @db.Uuid
 
-  /// Half-open interval [startDate, endDate). A null endDate means current.
+  /// Half-open interval [startDate, endDate). Null endDate means current.
   /// At most one open subscription per (household, category) — enforced in the
   /// service layer today; a Postgres exclusion constraint is the eventual home
   /// for it, once btree_gist is in the migration set.
@@ -250,25 +886,26 @@ model Subscription {
 
   status SubscriptionStatus @default(ACTIVE)
 
-  /// Expected recurring amount. Actual charges live on Bill; this is what the
-  /// plan says it should be, which is what makes "you're being overcharged"
-  /// answerable.
-  expectedAmount Decimal?      @db.Decimal(14, 2)
-  currency       String        @default("NZD") @db.Char(3)
-  billingCycle   BillingCycle  @default(MONTHLY)
-  /// Day of month a bill is expected — drives "this is overdue" detection.
+  /// What the plan says it should cost. Actual charges live on Bill; the gap
+  /// between the two is what makes "you're being overcharged" answerable.
+  expectedAmount Decimal?     @db.Decimal(14, 2)
+  currency       String       @default("NZD") @db.Char(3)
+  billingCycle   BillingCycle @default(MONTHLY)
+  /// Day of month a bill is expected — drives overdue detection.
   billingDay     Int?
 
-  accountNumber String?
-  planName      String?
-  contractEndsAt DateTime? @db.Date
+  accountNumber    String?
+  planName         String?
+  contractEndsAt   DateTime? @db.Date
   noticePeriodDays Int?
 
-  /// Why this subscription ended. Free text on purpose — "switched to cheaper
-  /// plan", "moved house", "company went under".
+  /// Why it ended. Free text on purpose — "switched to cheaper plan", "moved
+  /// house", "company went under".
   endReason String?
-  notes     String?
+  notesEnc  Bytes?
   metadata  Json?
+
+  keyVersion Int @default(1)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -310,37 +947,43 @@ enum BillingCycle {
 
 /// A bill or receipt.
 ///
-/// NOTE THE ABSENCE: there is no entityId and no categoryId here, and adding
-/// one would silently break vendor-switch continuity — the denormalised column
-/// and the subscription could disagree, and nothing would report it.
-/// Vendor and category resolve through subscriptionId.
+/// NOTE THE ABSENCE: there is no entityId and no categoryId here. Adding one
+/// would silently break vendor-switch continuity — the denormalised column and
+/// the subscription could disagree, and nothing would report it. Vendor and
+/// category resolve through subscriptionId.
+/// See docs/adr/0003-category-vendor-separation.md.
 model Bill {
   id             String @id @default(uuid()) @db.Uuid
   householdId    String @db.Uuid
   subscriptionId String @db.Uuid
 
   /// Date the vendor issued it.
-  issueDate DateTime @db.Date
+  issueDate DateTime  @db.Date
   dueDate   DateTime? @db.Date
-  /// The service period this bill covers — not the same as issueDate, and the
+  /// The service period covered — not the same as issueDate, and the
   /// distinction matters for "spend in FY2025".
   periodStart DateTime? @db.Date
   periodEnd   DateTime? @db.Date
 
-  amount   Decimal @db.Decimal(14, 2)
+  /// Not encrypted: the ledger aggregates on these. Encrypting them would make
+  /// SUM(amount) GROUP BY category impossible without decrypting the whole
+  /// table per query, defeating the reporting the product exists for.
+  amount    Decimal  @db.Decimal(14, 2)
   taxAmount Decimal? @db.Decimal(14, 2)
-  currency String  @default("NZD") @db.Char(3)
+  currency  String   @default("NZD") @db.Char(3)
 
   status        BillStatus @default(UNPAID)
   paidAt        DateTime?
   invoiceNumber String?
 
-  /// Set when this row was created by confirming an extraction rather than
+  /// Set when this row came from confirming an extraction rather than being
   /// typed by hand — lets us measure how good extraction actually is.
   extractionJobId String? @unique @db.Uuid
 
-  notes    String?
+  notesEnc Bytes?
   metadata Json?
+
+  keyVersion Int @default(1)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -367,242 +1010,13 @@ enum BillStatus {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Relationship half: threads, communications, attachments
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// A trackable issue with a vendor — "boiler warranty dispute", "billing error
-/// March 2026". The unit you actually want to follow, as opposed to individual
-/// emails.
-model Thread {
-  id          String       @id @default(uuid()) @db.Uuid
-  householdId String       @db.Uuid
-  entityId    String?      @db.Uuid
-  title       String
-  status      ThreadStatus @default(OPEN)
-  priority    ThreadPriority @default(NORMAL)
-  summary     String?
-  /// Set when we're waiting on the vendor and want to be reminded.
-  followUpAt  DateTime?
-  resolvedAt  DateTime?
-  metadata    Json?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  household      Household       @relation(fields: [householdId], references: [id], onDelete: Cascade)
-  entity         Entity?         @relation(fields: [entityId], references: [id], onDelete: SetNull)
-  communications Communication[]
-
-  @@index([householdId])
-  @@index([householdId, status])
-  @@index([entityId])
-  @@map("threads")
-}
-
-enum ThreadStatus {
-  OPEN
-  /// Waiting on the vendor to respond.
-  AWAITING_VENDOR
-  /// Waiting on us.
-  AWAITING_US
-  RESOLVED
-  ABANDONED
-}
-
-enum ThreadPriority {
-  LOW
-  NORMAL
-  HIGH
-  URGENT
-}
-
-/// Normalised log of an email, call, letter, or note. Email is read-only:
-/// Ledgr links and extracts, it does not compose or reimplement SMTP.
-model Communication {
-  id          String  @id @default(uuid()) @db.Uuid
-  householdId String  @db.Uuid
-  entityId    String? @db.Uuid
-  threadId    String? @db.Uuid
-
-  type      CommunicationType
-  direction CommunicationDirection
-
-  subject  String?
-  body     String?
-  bodyHtml String?
-  /// Plain-text preview for list views without loading the full body.
-  snippet  String?
-
-  occurredAt DateTime
-
-  /// RFC822 Message-ID. Unique per household so an IMAP reconnect or a re-sync
-  /// can never double-insert the same email.
-  messageId String?
-  /// RFC822 In-Reply-To, for reconstructing mail threading.
-  inReplyTo String?
-  /// Provider-side identifier (IMAP UID, CalDAV href).
-  externalId String?
-  /// Which mail account this arrived through.
-  mailAccountId String? @db.Uuid
-
-  fromAddress String?
-  toAddresses String[] @default([])
-  ccAddresses String[] @default([])
-
-  isRead   Boolean @default(false)
-  metadata Json?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  household   Household    @relation(fields: [householdId], references: [id], onDelete: Cascade)
-  entity      Entity?      @relation(fields: [entityId], references: [id], onDelete: SetNull)
-  thread      Thread?      @relation(fields: [threadId], references: [id], onDelete: SetNull)
-  mailAccount MailAccount? @relation(fields: [mailAccountId], references: [id], onDelete: SetNull)
-  attachments Attachment[]
-
-  @@unique([householdId, messageId])
-  @@index([householdId])
-  @@index([householdId, occurredAt])
-  @@index([entityId, occurredAt])
-  @@index([threadId])
-  @@map("communications")
-}
-
-enum CommunicationType {
-  EMAIL
-  PHONE_CALL
-  SMS
-  LETTER
-  MEETING
-  /// Something typed straight into Ledgr.
-  NOTE
-  CHAT
-}
-
-enum CommunicationDirection {
-  INBOUND
-  OUTBOUND
-  /// Notes and meetings have no direction.
-  INTERNAL
-}
-
-/// A stored file. Bytes live in MinIO/S3; this row is the metadata and the key.
-model Attachment {
-  id          String @id @default(uuid()) @db.Uuid
-  householdId String @db.Uuid
-
-  filename    String
-  contentType String
-  sizeBytes   Int
-  /// Object key in the S3 bucket.
-  storageKey  String @unique
-  /// SHA-256 of the content, for dedupe — the same receipt often arrives by
-  /// email and gets uploaded by hand.
-  checksum    String?
-
-  tag AttachmentTag @default(OTHER)
-
-  communicationId String? @db.Uuid
-  billId          String? @db.Uuid
-
-  metadata Json?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  household      Household       @relation(fields: [householdId], references: [id], onDelete: Cascade)
-  communication  Communication?  @relation(fields: [communicationId], references: [id], onDelete: SetNull)
-  bill           Bill?           @relation(fields: [billId], references: [id], onDelete: SetNull)
-  extractionJobs ExtractionJob[]
-
-  @@index([householdId])
-  @@index([householdId, tag])
-  @@index([communicationId])
-  @@index([billId])
-  @@index([householdId, checksum])
-  @@map("attachments")
-}
-
-enum AttachmentTag {
-  RECEIPT
-  INVOICE
-  CONTRACT
-  STATEMENT
-  CORRESPONDENCE
-  WARRANTY
-  OTHER
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Sync
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// An IMAP/CalDAV account to sync. Protocol-based rather than vendor-API-based,
-/// so Gmail, Fastmail, iCloud and self-hosted all work through one code path.
-model MailAccount {
-  id          String @id @default(uuid()) @db.Uuid
-  householdId String @db.Uuid
-  userId      String @db.Uuid
-
-  displayName String
-  protocol    MailProtocol @default(IMAP)
-  host        String
-  port        Int
-  username    String
-  /// Encrypted at rest with the application key, not hashed — the worker has
-  /// to be able to present it to the server.
-  passwordEncrypted String
-  useTls            Boolean @default(true)
-
-  /// Folders to watch. Empty means INBOX only.
-  folders String[] @default([])
-
-  /// False when the server refuses IDLE and we fall back to interval polling.
-  supportsIdle Boolean @default(true)
-
-  status         SyncStatus @default(PENDING)
-  lastSyncAt     DateTime?
-  lastSyncError  String?
-  /// IMAP UIDVALIDITY. If the server changes this, cached UIDs are meaningless
-  /// and the folder must be resynced from scratch.
-  uidValidity    BigInt?
-  lastSeenUid    BigInt?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  household      Household       @relation(fields: [householdId], references: [id], onDelete: Cascade)
-  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  communications Communication[]
-
-  @@index([householdId])
-  @@index([userId])
-  @@map("mail_accounts")
-}
-
-enum MailProtocol {
-  IMAP
-  CALDAV
-  CARDDAV
-}
-
-enum SyncStatus {
-  PENDING
-  CONNECTED
-  SYNCING
-  ERROR
-  DISABLED
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // OCR + AI extraction
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// One run of the OCR → LLM pipeline over an attachment.
 ///
-/// This table exists so that extraction NEVER writes a Bill directly. Results
-/// land here in PENDING_REVIEW and wait for a human. Auto-categorisation is a
+/// This table exists so extraction NEVER writes a Bill directly. Results land
+/// here in PENDING_REVIEW and wait for a human. Auto-categorisation is a
 /// suggestion; a ledger should not silently acquire rows nobody approved.
 model ExtractionJob {
   id           String @id @default(uuid()) @db.Uuid
@@ -613,21 +1027,21 @@ model ExtractionJob {
 
   /// Raw Tesseract output, kept so a failed extraction still leaves something
   /// usable for manual entry.
-  ocrText       String?
+  ocrTextEnc    Bytes?
   ocrConfidence Float?
 
-  /// Model output, validated against the shared Zod schema in
-  /// @ledgr/contracts before being written here.
-  extracted Json?
-  /// Model self-reported confidence, used to sort the review queue so the
-  /// doubtful ones surface first.
-  confidence Float?
-  model      String?
+  /// Model output, validated against the shared Zod schema in @ledgr/contracts
+  /// before being written here.
+  extractedEnc Bytes?
+  /// Model self-reported confidence, used to sort the review queue so doubtful
+  /// results surface first.
+  confidence   Float?
+  model        String?
 
   /// What the model proposed, pre-confirmation.
   suggestedEntityId   String? @db.Uuid
   suggestedCategoryId String? @db.Uuid
-  /// Trigram similarity of the extracted vendor string to the matched entity.
+  /// Trigram similarity between the extracted vendor string and the match.
   entityMatchScore    Float?
   /// Vendor name as it literally appeared on the document.
   rawVendorName       String?
@@ -635,6 +1049,8 @@ model ExtractionJob {
   errorMessage String?
   reviewedAt   DateTime?
   reviewedBy   String?   @db.Uuid
+
+  keyVersion Int @default(1)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -655,7 +1071,7 @@ enum ExtractionStatus {
   QUEUED
   RUNNING_OCR
   RUNNING_EXTRACTION
-  /// Extraction succeeded and is waiting for a human. The only path to a Bill.
+  /// Extraction succeeded and awaits a human. The only path to a Bill.
   PENDING_REVIEW
   CONFIRMED
   REJECTED

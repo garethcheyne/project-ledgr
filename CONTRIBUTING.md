@@ -29,7 +29,7 @@ These three are load-bearing. A change that breaks one needs an ADR arguing why,
 Multi-tenancy is designed in from the start, even for single-user installs, because retrofitting it later means touching every query in the codebase. Scoping is applied centrally in a Prisma client extension — don't hand-roll `where: { householdId }` per query, and don't bypass the extension.
 
 **3. Bills never store a vendor.**
-A `Bill` points at a `Subscription`, which resolves vendor *and* category by date. This is the whole product thesis: it's what keeps spend continuity intact when someone switches providers. A denormalised `vendorId` on `Bill` would silently break vendor-switch history, and it would break it quietly — the tests to watch are the vendor-switch continuity ones.
+A `Bill` points at a `Subscription`, which resolves vendor _and_ category by date. This is the whole product thesis: it's what keeps spend continuity intact when someone switches providers. A denormalised `vendorId` on `Bill` would silently break vendor-switch history, and it would break it quietly — the tests to watch are the vendor-switch continuity ones.
 
 ## Commits and branches
 

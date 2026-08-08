@@ -12,7 +12,7 @@ No existing tool combines all of:
 - Category-vs-vendor subscription tracking (closest: Wallos — PHP/SQLite, self-hosted, household member support, no relationship/communication tracking, no category/vendor separation)
 - OCR + AI receipt extraction (closest: SubOS — small/early project, Python/React)
 - Household multi-tenancy + email/calendar sync in one package
-Traditional open-source CRMs (SuiteCRM, EspoCRM, Corteza) are sales-pipeline shaped and explicitly not what this is.
+  Traditional open-source CRMs (SuiteCRM, EspoCRM, Corteza) are sales-pipeline shaped and explicitly not what this is.
 
 **Market reality check:** audience is self-hosted/homelab-adjacent (r/selfhosted scale — thousands to low tens of thousands of engaged users), not mass market. "Open source now, SaaS later" has precedent (n8n, Cal.com) but no guarantee — validate demand before assuming the pivot. Part of this audience self-hosts specifically to avoid SaaS/cloud, so a future SaaS pivot could alienate early adopters if not handled carefully. Keep the self-host path fully alive.
 
@@ -25,6 +25,7 @@ Traditional open-source CRMs (SuiteCRM, EspoCRM, Corteza) are sales-pipeline sha
 - **Communications** — normalized log of emails/calls/notes, linked to Entity and optionally a Thread
 - **Attachments** — from email or upload, linked to Communications, tagged (receipt, contract, correspondence)
 - **Bills/Receipts** — specialized attachment, linked to a Subscription (inherits vendor + category automatically)
+
 ## OCR/AI Pipeline
 
 Upload or email attachment → OCR (Tesseract) → LLM structured extraction (vendor, amount, billing period, category) → manual human-in-the-loop confirm step before committing to DB. Fuzzy-match vendor names against existing Entities to avoid duplicates. Auto-categorization is a suggestion, not auto-committed, in MVP.
@@ -37,14 +38,14 @@ Three decoupled layers so a native mobile app later is "just another client," no
 2. **Sync service** — standalone worker behind a single `MailProvider` adapter interface, with three implementations: Gmail API, Microsoft Graph, and IMAP/SMTP (plus CalDAV/CardDAV for providers without an API). Nothing above the interface knows which provider it's talking to. See [ADR 0008](docs/adr/0008-native-provider-apis.md).
 3. **Web frontend** — Next.js, just one client of the Core API
 
-**Scope revised:** Ledgr is now a *full* email client — compose, reply, drafts, folders, threading, send — not read-and-extract only. The original scope explicitly excluded this to avoid becoming "build an email client instead of a personal CRM", and that risk is real and acknowledged: this is the single largest piece of work in the project. It is accepted because a CRM you have to leave in order to reply is one you visit rather than live in, and the reply never gets logged against the vendor. Contained by sequencing (email ships before the finance core so the everyday half exists first), by using established libraries rather than reimplementing protocols, and by a hard boundary: **Ledgr connects to your mailbox, it does not run a mail server.** See [ADR 0005](docs/adr/0005-full-email-client.md).
+**Scope revised:** Ledgr is now a _full_ email client — compose, reply, drafts, folders, threading, send — not read-and-extract only. The original scope explicitly excluded this to avoid becoming "build an email client instead of a personal CRM", and that risk is real and acknowledged: this is the single largest piece of work in the project. It is accepted because a CRM you have to leave in order to reply is one you visit rather than live in, and the reply never gets logged against the vendor. Contained by sequencing (email ships before the finance core so the everyday half exists first), by using established libraries rather than reimplementing protocols, and by a hard boundary: **Ledgr connects to your mailbox, it does not run a mail server.** See [ADR 0005](docs/adr/0005-full-email-client.md).
 
 ## Deployment Model
 
 - Local-first, Docker Compose from day one: web, api, sync-worker, postgres, minio (attachments), redis (job queue), backup
 - Multi-tenancy (`household_id` on every table) designed in from the start, even for single-user local installs — retrofitting later is expensive
 - **Encrypted at rest** — AES-256-GCM column encryption with envelope keys, so a leaked dump or backup is ciphertext. Not end-to-end: the server must be able to read mail and receipts for sync, OCR and extraction to work at all. See [ADR 0006](docs/adr/0006-encryption-at-rest.md).
-- **Backup and DR** — encrypted `pg_dump` + MinIO sync, local by default with an optional remote target, plus a restore runbook and an automated restore *verification*. The encryption key is backed up separately from the data, on purpose. See [ADR 0007](docs/adr/0007-backup-and-disaster-recovery.md).
+- **Backup and DR** — encrypted `pg_dump` + MinIO sync, local by default with an optional remote target, plus a restore runbook and an automated restore _verification_. The encryption key is backed up separately from the data, on purpose. See [ADR 0007](docs/adr/0007-backup-and-disaster-recovery.md).
 - SaaS hosting deferred to a later phase (same codebase, different deployment profile — managed infra + billing layer)
 - Native mobile app deferred — responsive PWA first, native app only if usage justifies it
 
@@ -84,4 +85,3 @@ Recorded as ADRs in [`docs/adr/`](docs/adr/); the rationale and what was rejecte
 4. Domain / npm / GitHub-org availability check for "Ledgr" — **not yet done, and worth doing before package names are published**
 5. Threading strategy for the IMAP adapter — `References` chains are unreliable in the wild and need a subject+time fallback; Gmail and Graph give this for free, which is part of why they're primary
 6. Whether a local-LLM option (Ollama / OpenAI-compatible endpoint) is needed for the privacy-motivated slice of the self-hosted audience — deferred, currently Anthropic-only
-

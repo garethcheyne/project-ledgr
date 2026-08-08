@@ -17,7 +17,7 @@ Consider switching power companies in March. With a vendor on each bill, "spend 
 
 Three models instead of two:
 
-- **`Category`** — the persistent thing being tracked. *Power.* Never changes when a vendor does.
+- **`Category`** — the persistent thing being tracked. _Power._ Never changes when a vendor does.
 - **`Entity`** — a vendor/company.
 - **`Subscription`** — `entityId` × `categoryId` over `[startDate, endDate)`. The dated relationship between them.
 

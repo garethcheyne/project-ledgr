@@ -4,7 +4,11 @@
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
-  "files": ["tsconfig.base.json", "tsconfig.nest.json", "eslint.config.js"],
+  "files": [
+    "tsconfig.base.json",
+    "tsconfig.nest.json",
+    "eslint.config.js"
+  ],
   "exports": {
     "./eslint": "./eslint.config.js",
     "./tsconfig/base": "./tsconfig.base.json",

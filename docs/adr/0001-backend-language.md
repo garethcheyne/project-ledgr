@@ -21,7 +21,7 @@ The backend has three distinct jobs, and they pull in different directions:
 
 The deciding factor is the type boundary between API and web. Every request and response shape is defined once as a Zod schema in `packages/contracts` and consumed by both sides. A change to an API contract becomes a compile error in the frontend rather than a runtime surprise — and given how much of this product is CRUD over a fiddly relational model, that feedback loop is where most of the day-to-day time goes.
 
-The OCR/LLM ecosystem also matters more than it first appears. The Anthropic SDK's structured-output helpers let the *same* Zod schema define the LLM's output contract and the API's validation. In Go or C# that becomes two definitions that can drift, and drift between "what the model returns" and "what we accept" is exactly the kind of bug that surfaces as a corrupted ledger row weeks later.
+The OCR/LLM ecosystem also matters more than it first appears. The Anthropic SDK's structured-output helpers let the _same_ Zod schema define the LLM's output contract and the API's validation. In Go or C# that becomes two definitions that can drift, and drift between "what the model returns" and "what we accept" is exactly the kind of bug that surfaces as a corrupted ledger row weeks later.
 
 ## What we gave up
 

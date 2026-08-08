@@ -41,10 +41,10 @@ This is the single most likely way a user destroys their own installation: dilig
 
 ## Restore targets
 
-| | Target | Reasoning |
-| --- | --- | --- |
+|                     | Target                                | Reasoning                                                                                                 |
+| ------------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | **RPO** (data loss) | ≤ 24h default, ≤ 1h with hourly dumps | Household finance data changes slowly; a day is tolerable, and the knob is there for people who disagree. |
-| **RTO** (downtime) | ≤ 1h from a clean host | Bounded by `docker compose up` plus restore time. |
+| **RTO** (downtime)  | ≤ 1h from a clean host                | Bounded by `docker compose up` plus restore time.                                                         |
 
 ## An untested backup is not a backup
 

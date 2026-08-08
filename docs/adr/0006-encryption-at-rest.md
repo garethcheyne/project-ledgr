@@ -24,7 +24,7 @@ Not encrypted: primary and foreign keys, timestamps, enums, and the amount/date 
 
 ## Why not the alternatives
 
-**Volume encryption alone** (LUKS, encrypted EBS) protects a physically stolen disk and nothing else. A leaked `pg_dump`, a compromised container, or anyone holding DB credentials reads everything in plaintext. Since the most likely real-world exposure for a self-hosted app is a backup file copied somewhere careless, this is precisely the wrong threat to be defended against. It remains *complementary* and is recommended in the deployment docs — it is just not sufficient on its own.
+**Volume encryption alone** (LUKS, encrypted EBS) protects a physically stolen disk and nothing else. A leaked `pg_dump`, a compromised container, or anyone holding DB credentials reads everything in plaintext. Since the most likely real-world exposure for a self-hosted app is a backup file copied somewhere careless, this is precisely the wrong threat to be defended against. It remains _complementary_ and is recommended in the deployment docs — it is just not sufficient on its own.
 
 **End-to-end encryption with user-held keys** is the strongest privacy story and structurally incompatible with this product. If the server cannot decrypt, then OCR cannot read the receipt, Claude cannot extract from it, IMAP sync cannot parse messages, and server-side search cannot function. It would mean deleting features already committed to. It also makes key loss equal permanent data loss with no recovery path — a bad trade for a household finance tool.
 
