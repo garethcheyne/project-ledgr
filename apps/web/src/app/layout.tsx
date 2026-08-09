@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
@@ -52,7 +53,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }):
     <html lang="en" suppressHydrationWarning>
       <head>
         <style dangerouslySetInnerHTML={{ __html: baseStyles }} />
-        <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
+        {/* next/script with beforeInteractive rather than a raw <script>:
+            React never executes a bare script tag rendered by a component, and
+            Next 16 warns about it. This runs before hydration, which is the
+            whole point — see the comment on themeBootstrap. */}
+        <Script id="ledgr-theme-bootstrap" strategy="beforeInteractive">
+          {themeBootstrap}
+        </Script>
       </head>
       <body>
         <Providers>{children}</Providers>

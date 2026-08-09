@@ -1,18 +1,17 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import {
   Button,
   Field,
   Input,
-  Link as FluentLink,
   MessageBar,
   MessageBarBody,
   Spinner,
   makeStyles,
   tokens,
+  AppLink,
 } from "../../components/ui";
 import { ApiRequestError, authApi } from "../../lib/api-client";
 import { saveSession } from "../../lib/session";
@@ -191,10 +190,7 @@ export default function RegisterPage(): React.JSX.Element {
           </Button>
 
           <div className={styles.switcher}>
-            Already have an account?{" "}
-            <FluentLink as="a" href="/login" appearance="subtle">
-              <Link href="/login">Sign in</Link>
-            </FluentLink>
+            Already have an account? <AppLink href="/login">Sign in</AppLink>
           </div>
         </div>
       </form>
