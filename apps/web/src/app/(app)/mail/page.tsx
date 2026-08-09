@@ -5,6 +5,7 @@ import {
   ArrowSyncRegular,
   AttachRegular,
   MailRegular,
+  MailReadRegular,
   MailUnreadRegular,
   StarFilled,
   StarRegular,
@@ -22,32 +23,29 @@ import {
   type CommandBarItem,
 } from "../../../components/ui";
 import { PageHeader } from "../../../components/shell";
+import { MessageBody } from "../../../components/mail/message-body";
+import { LinkCompany } from "../../../components/mail/link-company";
+import { ResizeHandle, useResizableWidth } from "../../../components/mail/resizable";
 import { ApiRequestError, mailApi, type MessageDetail } from "../../../lib/api-client";
+
+const FOLDER_BOUNDS = { min: 140, max: 400 };
+const LIST_BOUNDS = { min: 260, max: 900 };
 
 const useStyles = makeStyles({
   layout: {
     flex: 1,
-    display: "grid",
+    display: "flex",
     minHeight: 0,
-    gridTemplateColumns: "1fr",
     backgroundColor: tokens.colorNeutralBackground3,
-    // Three panes only when there's room; below that the list stands alone and
-    // opening a message replaces it.
-    "@media (min-width: 1000px)": { gridTemplateColumns: "200px minmax(320px, 1fr)" },
-    "@media (min-width: 1400px)": { gridTemplateColumns: "200px 380px 1fr" },
   },
+
   folders: {
-    display: "none",
-    "@media (min-width: 1000px)": {
-      display: "flex",
-      flexDirection: "column",
-      padding: "8px 0",
-      backgroundColor: tokens.colorNeutralBackground1,
-      borderRightWidth: "1px",
-      borderRightStyle: "solid",
-      borderRightColor: tokens.colorNeutralStroke2,
-      overflowY: "auto",
-    },
+    display: "flex",
+    flexDirection: "column",
+    padding: "8px 0",
+    flexShrink: 0,
+    backgroundColor: tokens.colorNeutralBackground1,
+    overflowY: "auto",
   },
   folder: {
     display: "flex",
@@ -66,17 +64,16 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground2Selected,
     fontWeight: tokens.fontWeightSemibold,
   },
-  folderCount: { marginLeft: "auto", color: tokens.colorNeutralForeground3, fontSize: "12px" },
+  folderName: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 },
+  folderCount: { color: tokens.colorNeutralForeground3, fontSize: "12px", flexShrink: 0 },
 
   list: {
     display: "flex",
     flexDirection: "column",
     minHeight: 0,
+    flexShrink: 0,
     overflowY: "auto",
     backgroundColor: tokens.colorNeutralBackground1,
-    borderRightWidth: "1px",
-    borderRightStyle: "solid",
-    borderRightColor: tokens.colorNeutralStroke2,
   },
   row: {
     display: "flex",
@@ -103,7 +100,7 @@ const useStyles = makeStyles({
     flex: 1,
     minWidth: 0,
   },
-  // Unread is the only thing bold, so the eye finds it immediately.
+  // Unread is the only bold thing, so the eye finds it immediately.
   unread: { fontWeight: tokens.fontWeightBold },
   when: { fontSize: "11px", color: tokens.colorNeutralForeground3, flexShrink: 0 },
   subject: {
@@ -119,35 +116,30 @@ const useStyles = makeStyles({
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
   },
+  star: { color: tokens.colorPaletteMarigoldForeground1 },
 
   reader: {
-    display: "none",
-    "@media (min-width: 1400px)": {
-      display: "flex",
-      flexDirection: "column",
-      minHeight: 0,
-      overflowY: "auto",
-      backgroundColor: tokens.colorNeutralBackground1,
-    },
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    minWidth: 0,
+    minHeight: 0,
+    overflowY: "auto",
+    backgroundColor: tokens.colorNeutralBackground1,
   },
   readerHead: {
-    padding: "16px 20px",
+    padding: "16px 20px 12px",
     borderBottomWidth: "1px",
     borderBottomStyle: "solid",
     borderBottomColor: tokens.colorNeutralStroke2,
     display: "flex",
     flexDirection: "column",
-    gap: "4px",
+    gap: "8px",
   },
   readerSubject: { fontSize: tokens.fontSizeBase500, fontWeight: tokens.fontWeightSemibold },
   readerMeta: { fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 },
-  readerBody: {
-    padding: "16px 20px",
-    fontSize: tokens.fontSizeBase300,
-    lineHeight: tokens.lineHeightBase400,
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-  },
+  readerActions: { display: "flex", gap: "6px", flexWrap: "wrap" },
+  readerBody: { padding: "16px 20px 40px" },
   centre: {
     flex: 1,
     display: "flex",
@@ -163,6 +155,9 @@ const useStyles = makeStyles({
 export default function MailPage(): React.JSX.Element {
   const styles = useStyles();
 
+  const [folderWidth, setFolderWidth] = useResizableWidth("ledgr.mail.folderW", 190, FOLDER_BOUNDS);
+  const [listWidth, setListWidth] = useResizableWidth("ledgr.mail.listW", 420, LIST_BOUNDS);
+
   const [folders, setFolders] = useState<MailFolderSummary[] | null>(null);
   const [folderId, setFolderId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageListItem[] | null>(null);
@@ -174,9 +169,11 @@ export default function MailPage(): React.JSX.Element {
   const loadFolders = useCallback(async () => {
     try {
       const list = await mailApi.folders();
-      setFolders(list);
-      // Default to the inbox rather than whichever folder sorts first.
-      setFolderId((current) => current ?? list.find((f) => f.role === "INBOX")?.id ?? null);
+      // Only folders being synced are worth showing; the rest are empty by
+      // definition and would just be clutter.
+      const visible = list.filter((folder) => folder.isSubscribed || folder.totalCount > 0);
+      setFolders(visible);
+      setFolderId((current) => current ?? visible.find((f) => f.role === "INBOX")?.id ?? null);
     } catch (caught) {
       setError(caught instanceof ApiRequestError ? caught.message : "Couldn't load folders.");
       setFolders([]);
@@ -200,26 +197,49 @@ export default function MailPage(): React.JSX.Element {
     if (folders) void loadMessages(folderId);
   }, [folders, folderId, loadMessages]);
 
+  const patchRow = useCallback((id: string, patch: Partial<MessageListItem>) => {
+    setMessages(
+      (current) => current?.map((m) => (m.id === id ? { ...m, ...patch } : m)) ?? current,
+    );
+  }, []);
+
   async function openMessage(item: MessageListItem): Promise<void> {
     try {
-      setSelected(await mailApi.message(item.id));
+      const detail = await mailApi.message(item.id);
+      setSelected(detail);
       if (!item.isRead) {
         await mailApi.markRead(item.id, true);
-        // Update in place rather than refetching the whole list for one flag.
-        setMessages(
-          (current) =>
-            current?.map((m) => (m.id === item.id ? { ...m, isRead: true } : m)) ?? current,
-        );
-        setFolders(
-          (current) =>
-            current?.map((f) =>
-              f.id === folderId ? { ...f, unreadCount: Math.max(0, f.unreadCount - 1) } : f,
-            ) ?? current,
-        );
+        patchRow(item.id, { isRead: true });
+        await loadFolders();
       }
     } catch (caught) {
       setError(caught instanceof ApiRequestError ? caught.message : "Couldn't open that message.");
     }
+  }
+
+  async function toggleStar(item: MessageListItem | MessageDetail): Promise<void> {
+    const next = !item.isStarred;
+    // Optimistic: the provider round-trip takes a moment and a star should feel
+    // instant. Reverted below if the mailbox rejects it.
+    patchRow(item.id, { isStarred: next });
+    setSelected((current) => (current?.id === item.id ? { ...current, isStarred: next } : current));
+    try {
+      await mailApi.setStarred(item.id, next);
+    } catch {
+      patchRow(item.id, { isStarred: !next });
+      setSelected((current) =>
+        current?.id === item.id ? { ...current, isStarred: !next } : current,
+      );
+      setError("Couldn't update the star on the mail server.");
+    }
+  }
+
+  async function toggleRead(item: MessageDetail): Promise<void> {
+    const next = !item.isRead;
+    await mailApi.markRead(item.id, next);
+    patchRow(item.id, { isRead: next });
+    setSelected({ ...item, isRead: next });
+    await loadFolders();
   }
 
   async function sync(): Promise<void> {
@@ -247,8 +267,6 @@ export default function MailPage(): React.JSX.Element {
         stored === 0
           ? "Already up to date."
           : `Synced ${stored} message${stored === 1 ? "" : "s"}.${
-              // The first pass is capped so an enormous mailbox doesn't stall;
-              // say so rather than letting it look like everything arrived.
               more ? " More remain — sync again to continue." : ""
             }`,
       );
@@ -291,7 +309,10 @@ export default function MailPage(): React.JSX.Element {
         commands={commands}
         headerFields={
           activeFolder
-            ? [{ label: "Unread", value: <span>{activeFolder.unreadCount}</span> }]
+            ? [
+                { label: "Unread", value: <span>{activeFolder.unreadCount}</span> },
+                { label: "Total", value: <span>{activeFolder.totalCount}</span> },
+              ]
             : undefined
         }
       />
@@ -312,7 +333,7 @@ export default function MailPage(): React.JSX.Element {
       )}
 
       <div className={styles.layout}>
-        <nav className={styles.folders} aria-label="Mail folders">
+        <nav className={styles.folders} style={{ width: folderWidth }} aria-label="Mail folders">
           {folders?.map((folder) => (
             <button
               key={folder.id}
@@ -324,7 +345,7 @@ export default function MailPage(): React.JSX.Element {
               }}
             >
               {folder.unreadCount > 0 ? <MailUnreadRegular /> : <MailRegular />}
-              <span>{folder.name}</span>
+              <span className={styles.folderName}>{folder.name}</span>
               {folder.unreadCount > 0 && (
                 <span className={styles.folderCount}>{folder.unreadCount}</span>
               )}
@@ -332,7 +353,15 @@ export default function MailPage(): React.JSX.Element {
           ))}
         </nav>
 
-        <div className={styles.list}>
+        <ResizeHandle
+          label="Resize folder list"
+          currentWidth={folderWidth}
+          min={FOLDER_BOUNDS.min}
+          max={FOLDER_BOUNDS.max}
+          onResize={setFolderWidth}
+        />
+
+        <div className={styles.list} style={{ width: listWidth }}>
           {messages === null && (
             <div className={styles.centre}>
               <Spinner label="Loading…" />
@@ -343,10 +372,7 @@ export default function MailPage(): React.JSX.Element {
             <div className={styles.centre}>
               <div className={styles.empty}>
                 <MailRegular style={{ fontSize: "32px" }} className={styles.muted} />
-                <Body1 style={{ fontWeight: 600 }}>No messages yet</Body1>
-                <Body1 className={styles.muted}>
-                  Hit <strong>Sync</strong> to pull mail from your connected mailbox.
-                </Body1>
+                <Body1 style={{ fontWeight: 600 }}>No messages here</Body1>
                 <Button
                   appearance="primary"
                   icon={<ArrowSyncRegular />}
@@ -360,14 +386,21 @@ export default function MailPage(): React.JSX.Element {
           )}
 
           {messages?.map((message) => (
-            <button
+            <div
               key={message.id}
-              type="button"
               className={mergeClasses(
                 styles.row,
                 selected?.id === message.id && styles.rowSelected,
               )}
               onClick={() => void openMessage(message)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  void openMessage(message);
+                }
+              }}
             >
               <span className={styles.rowTop}>
                 <span
@@ -376,17 +409,44 @@ export default function MailPage(): React.JSX.Element {
                 >
                   {message.fromName || message.fromAddress || "(unknown sender)"}
                 </span>
-                {message.isStarred && <StarFilled />}
-                {message.hasAttachments && <AttachRegular />}
+                {message.hasAttachments && <AttachRegular className={styles.muted} />}
+                <span
+                  role="button"
+                  tabIndex={0}
+                  aria-label={message.isStarred ? "Unstar" : "Star"}
+                  className={message.isStarred ? styles.star : styles.muted}
+                  onClick={(event) => {
+                    // Starring must not also open the message.
+                    event.stopPropagation();
+                    void toggleStar(message);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.stopPropagation();
+                      event.preventDefault();
+                      void toggleStar(message);
+                    }
+                  }}
+                >
+                  {message.isStarred ? <StarFilled /> : <StarRegular />}
+                </span>
                 <span className={styles.when}>{formatWhen(message.sentAt)}</span>
               </span>
               <span className={mergeClasses(styles.subject, !message.isRead && styles.unread)}>
                 {message.subject}
               </span>
               <span className={styles.snippet}>{message.snippet}</span>
-            </button>
+            </div>
           ))}
         </div>
+
+        <ResizeHandle
+          label="Resize message list"
+          currentWidth={listWidth}
+          min={LIST_BOUNDS.min}
+          max={LIST_BOUNDS.max}
+          onResize={setListWidth}
+        />
 
         <div className={styles.reader}>
           {selected ? (
@@ -395,18 +455,44 @@ export default function MailPage(): React.JSX.Element {
                 <span className={styles.readerSubject}>{selected.subject}</span>
                 <span className={styles.readerMeta}>
                   {selected.fromName ? `${selected.fromName} · ` : ""}
-                  {selected.fromAddress}
+                  {selected.fromAddress} · {new Date(selected.sentAt).toLocaleString()}
                 </span>
                 <span className={styles.readerMeta}>
-                  To {selected.to.map((address) => address.address).join(", ") || "—"} ·{" "}
-                  {new Date(selected.sentAt).toLocaleString()}
+                  To {selected.to.map((address) => address.address).join(", ") || "—"}
                 </span>
+
+                <div className={styles.readerActions}>
+                  <Button
+                    size="small"
+                    icon={selected.isStarred ? <StarFilled /> : <StarRegular />}
+                    onClick={() => void toggleStar(selected)}
+                  >
+                    {selected.isStarred ? "Starred" : "Star"}
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={selected.isRead ? <MailUnreadRegular /> : <MailReadRegular />}
+                    onClick={() => void toggleRead(selected)}
+                  >
+                    Mark {selected.isRead ? "unread" : "read"}
+                  </Button>
+                </div>
+
+                <LinkCompany
+                  messageId={selected.id}
+                  fromAddress={selected.fromAddress}
+                  linkedEntityId={selected.entityId}
+                  linkedEntityName={selected.entityName}
+                  onChanged={() => void openMessage(selected)}
+                />
               </div>
-              {/* Plain text only for now. Rendering remote HTML safely needs
-                  sanitising and image proxying, and doing it badly is a
-                  tracking-pixel and XSS problem. */}
+
               <div className={styles.readerBody}>
-                {selected.bodyText ?? selected.snippet ?? "(no text content)"}
+                <MessageBody
+                  html={selected.bodyHtml}
+                  text={selected.bodyText}
+                  snippet={selected.snippet}
+                />
               </div>
             </>
           ) : (
@@ -424,9 +510,8 @@ export default function MailPage(): React.JSX.Element {
 function formatWhen(iso: string): string {
   const date = new Date(iso);
   const now = new Date();
-  const sameDay = date.toDateString() === now.toDateString();
-
-  if (sameDay) return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (date.toDateString() === now.toDateString())
+    return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   if (date.getFullYear() === now.getFullYear())
     return date.toLocaleDateString(undefined, { day: "numeric", month: "short" });
   return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });

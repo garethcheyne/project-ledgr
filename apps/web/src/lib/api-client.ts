@@ -133,6 +133,12 @@ export const mailApi = {
 
   markRead: (id: string, read: boolean): Promise<void> =>
     request(`/mail/messages/${id}/read`, { method: "PATCH", body: JSON.stringify({ read }) }),
+
+  setStarred: (id: string, starred: boolean): Promise<void> =>
+    request(`/mail/messages/${id}/starred`, {
+      method: "PATCH",
+      body: JSON.stringify({ starred }),
+    }),
 };
 
 /** Mirrors SyncResult in the API. */
@@ -151,7 +157,40 @@ export interface MessageDetail extends MessageListItem {
   to: { name: string; address: string }[];
   cc: { name: string; address: string }[];
   folderId: string | null;
+  entityId: string | null;
+  entityName: string | null;
 }
+
+export interface EntitySummary {
+  id: string;
+  name: string;
+  status: string;
+  emailDomains: string[];
+  messageCount: number;
+}
+
+export const entitiesApi = {
+  list: (search?: string): Promise<EntitySummary[]> =>
+    request(`/entities${search ? `?search=${encodeURIComponent(search)}` : ""}`),
+
+  create: (input: { name: string; emailDomains?: string[] }): Promise<EntitySummary> =>
+    request("/entities", { method: "POST", body: JSON.stringify(input) }),
+
+  suggest: (
+    address: string,
+  ): Promise<{ matches: EntitySummary[]; suggestedName: string; domain: string }> =>
+    request(`/entities/suggest?address=${encodeURIComponent(address)}`),
+
+  /** Attributes existing mail from this company's known domains. */
+  backfill: (id: string): Promise<{ linked: number }> =>
+    request(`/entities/${id}/backfill`, { method: "POST" }),
+
+  linkMessage: (messageId: string, entityId: string | null): Promise<void> =>
+    request(`/mail/messages/${messageId}/entity`, {
+      method: "PATCH",
+      body: JSON.stringify({ entityId }),
+    }),
+};
 
 export const authApi = {
   register: (input: RegisterInput): Promise<AuthResponse> =>

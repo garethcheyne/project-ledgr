@@ -16,12 +16,14 @@
     "@fluentui/react-datepicker-compat": "^0.6.35",
     "@fluentui/react-icons": "2.0.335",
     "@ledgr/contracts": "workspace:*",
+    "dompurify": "^3.4.13",
     "fluentui-extended": "^2026.8.54",
     "next": "16.3.0",
     "react": "19.0.0",
     "react-dom": "19.0.0"
   },
   "devDependencies": {
+    "@types/dompurify": "^3.2.0",
     "@types/node": "22.10.5",
     "@types/react": "19.0.7",
     "@types/react-dom": "19.0.3",

@@ -4,8 +4,10 @@ import { MailReadController } from "./mail-read.controller.js";
 import { MailService } from "./mail.service.js";
 import { MailSyncService } from "./mail-sync.service.js";
 import { MailReadService } from "./mail-read.service.js";
+import { EntitiesModule } from "../entities/entities.module.js";
 
 @Module({
+  imports: [EntitiesModule],
   controllers: [MailController, MailReadController],
   providers: [MailService, MailSyncService, MailReadService],
   exports: [MailService, MailSyncService, MailReadService],

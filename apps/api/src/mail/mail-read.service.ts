@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import { ErrorCodes, type MailFolderSummary, type MessageListItem } from "@ledgr/contracts";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { HouseholdCryptoService } from "../crypto/household-crypto.service.js";
+import { MailService } from "./mail.service.js";
 
 export interface MessageDetail extends MessageListItem {
   bodyText: string | null;
@@ -9,6 +10,8 @@ export interface MessageDetail extends MessageListItem {
   to: { name: string; address: string }[];
   cc: { name: string; address: string }[];
   folderId: string | null;
+  entityId: string | null;
+  entityName: string | null;
 }
 
 /**
@@ -23,20 +26,47 @@ export class MailReadService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly crypto: HouseholdCryptoService,
+    private readonly mail: MailService,
   ) {}
 
+  /**
+   * Folder list with counts derived from the messages themselves.
+   *
+   * The stored totalCount/unreadCount columns are NOT used. Maintained counters
+   * drift — a re-sync, a move, or a delete each need a matching adjustment, and
+   * missing one leaves a permanently wrong number. This shipped with exactly
+   * that bug: folders read 0 messages and -1 unread. Deriving costs one grouped
+   * query and cannot be wrong.
+   */
   async listFolders(householdId: string, accountId?: string): Promise<MailFolderSummary[]> {
-    const folders = await this.prisma.client.mailFolder.findMany({
-      where: { householdId, ...(accountId ? { mailAccountId: accountId } : {}) },
-      orderBy: [{ role: "asc" }, { name: "asc" }],
-    });
+    const where = { householdId, ...(accountId ? { mailAccountId: accountId } : {}) };
+
+    const [folders, totals, unread] = await Promise.all([
+      this.prisma.client.mailFolder.findMany({
+        where,
+        orderBy: [{ role: "asc" }, { name: "asc" }],
+      }),
+      this.prisma.client.message.groupBy({
+        by: ["folderId"],
+        where: { householdId },
+        _count: { _all: true },
+      }),
+      this.prisma.client.message.groupBy({
+        by: ["folderId"],
+        where: { householdId, isRead: false },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const totalBy = new Map(totals.map((row) => [row.folderId, row._count._all]));
+    const unreadBy = new Map(unread.map((row) => [row.folderId, row._count._all]));
 
     return folders.map((folder) => ({
       id: folder.id,
       name: folder.name,
       role: folder.role,
-      totalCount: folder.totalCount,
-      unreadCount: folder.unreadCount,
+      totalCount: totalBy.get(folder.id) ?? 0,
+      unreadCount: unreadBy.get(folder.id) ?? 0,
       isSubscribed: folder.isSubscribed,
     }));
   }
@@ -88,6 +118,7 @@ export class MailReadService {
   async getMessage(householdId: string, messageId: string): Promise<MessageDetail> {
     const message = await this.prisma.client.message.findFirst({
       where: { id: messageId, householdId },
+      include: { entity: { select: { id: true, name: true } } },
     });
 
     if (!message) {
@@ -113,7 +144,45 @@ export class MailReadService {
       isRead: message.isRead,
       isStarred: message.isStarred,
       hasAttachments: message.hasAttachments,
+      entityId: message.entity?.id ?? null,
+      entityName: message.entity?.name ?? null,
     };
+  }
+
+  /**
+   * Stars or unstars, updating both Ledgr and the provider.
+   *
+   * The provider write happens first: if it fails the local state is left
+   * alone, so the UI never claims a change the mailbox didn't accept.
+   */
+  async setStarred(householdId: string, messageId: string, starred: boolean): Promise<void> {
+    const message = await this.prisma.client.message.findFirst({
+      where: { id: messageId, householdId },
+      select: {
+        id: true,
+        providerMessageId: true,
+        mailAccountId: true,
+        folder: { select: { providerFolderId: true } },
+      },
+    });
+
+    if (!message?.folder) return;
+
+    const provider = await this.mail.providerFor(householdId, message.mailAccountId);
+    try {
+      await provider.markStarred(
+        message.folder.providerFolderId,
+        [message.providerMessageId],
+        starred,
+      );
+    } finally {
+      await provider.dispose();
+    }
+
+    await this.prisma.client.message.update({
+      where: { id: message.id },
+      data: { isStarred: starred },
+    });
   }
 
   /** Marks read locally. Provider flag sync happens on the next pass. */
@@ -125,14 +194,11 @@ export class MailReadService {
 
     if (!message || message.isRead === read) return;
 
-    await this.prisma.client.$transaction(async (tx) => {
-      await tx.message.update({ where: { id: message.id }, data: { isRead: read } });
-      if (message.folderId) {
-        await tx.mailFolder.update({
-          where: { id: message.folderId },
-          data: { unreadCount: { increment: read ? -1 : 1 } },
-        });
-      }
+    // No folder-counter bookkeeping: counts are derived in listFolders, which
+    // is what stopped them drifting to -1.
+    await this.prisma.client.message.update({
+      where: { id: message.id },
+      data: { isRead: read },
     });
   }
 
