@@ -1,4 +1,13 @@
-import type { ApiError, AuthResponse, LoginInput, RegisterInput } from "@ledgr/contracts";
+import type {
+  ApiError,
+  AuthResponse,
+  ConnectionTestResult,
+  ImapConnectionInput,
+  LoginInput,
+  MailAccountSummary,
+  RegisterInput,
+  TestConnectionInput,
+} from "@ledgr/contracts";
 
 /**
  * Client for the Core API.
@@ -28,6 +37,17 @@ export class ApiRequestError extends Error {
   }
 }
 
+/**
+ * Reads the access token directly rather than importing from ./session, which
+ * is a client module — this file is also used from places without the React
+ * runtime, and the coupling isn't worth it for one localStorage read.
+ */
+function authHeader(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  const token = window.localStorage.getItem("ledgr.accessToken");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response;
 
@@ -36,6 +56,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...init,
       headers: {
         "Content-Type": "application/json",
+        ...authHeader(),
         ...init.headers,
       },
     });
@@ -65,6 +86,19 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   return body as T;
 }
+
+export const mailApi = {
+  listAccounts: (): Promise<MailAccountSummary[]> => request("/mail/accounts"),
+
+  /** Probes credentials without saving, so a wrong app password is caught early. */
+  testConnection: (input: TestConnectionInput): Promise<ConnectionTestResult> =>
+    request("/mail/accounts/test", { method: "POST", body: JSON.stringify(input) }),
+
+  connect: (input: ImapConnectionInput): Promise<MailAccountSummary> =>
+    request("/mail/accounts", { method: "POST", body: JSON.stringify(input) }),
+
+  disconnect: (id: string): Promise<void> => request(`/mail/accounts/${id}`, { method: "DELETE" }),
+};
 
 export const authApi = {
   register: (input: RegisterInput): Promise<AuthResponse> =>

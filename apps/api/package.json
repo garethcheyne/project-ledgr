@@ -15,6 +15,7 @@
     "@ledgr/contracts": "workspace:*",
     "@ledgr/crypto": "workspace:*",
     "@ledgr/db": "workspace:*",
+    "@ledgr/mail": "workspace:^",
     "@nestjs/common": "11.1.28",
     "@nestjs/core": "11.1.28",
     "@nestjs/jwt": "11.0.0",

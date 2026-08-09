@@ -7,6 +7,7 @@ import { HttpExceptionFilter } from "./common/http-exception.filter.js";
 import { ENV, loadEnv, type Env } from "./config/env.js";
 import { HouseholdCryptoService } from "./crypto/household-crypto.service.js";
 import { HealthModule } from "./health/health.module.js";
+import { MailModule } from "./mail/mail.module.js";
 import { PrismaService } from "./prisma/prisma.service.js";
 
 /**
@@ -30,7 +31,7 @@ import { PrismaService } from "./prisma/prisma.service.js";
 export class CoreModule {}
 
 @Module({
-  imports: [CoreModule, AuthModule, HealthModule],
+  imports: [CoreModule, AuthModule, HealthModule, MailModule],
   providers: [
     // Authenticate by default; @Public() is the explicit opt-out. The reverse
     // makes an unguarded endpoint the silent result of a forgotten decorator.

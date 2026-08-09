@@ -32,6 +32,9 @@ importers:
       '@ledgr/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@ledgr/mail':
+        specifier: workspace:^
+        version: link:../../packages/mail
       '@nestjs/common':
         specifier: 11.1.28
         version: 11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.1)

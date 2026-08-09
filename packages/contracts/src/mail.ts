@@ -42,14 +42,27 @@ export type FolderRole = z.infer<typeof folderRoleSchema>;
  * implicit TLS, 143 is STARTTLS. Anything else is almost always a typo, and a
  * wrong port produces a confusing hang rather than a clear error.
  */
+/**
+ * Mailbox address.
+ *
+ * Deliberately more permissive than the account-signup email rule: a strict
+ * check rejects TLD-less hosts like `gareth@mailserver` or `you@nas.local`,
+ * which are perfectly normal on a self-hosted LAN — and self-hosters are this
+ * product's core audience. Requires a local part and a host, nothing more; the
+ * IMAP server is the real authority on whether the address works.
+ */
+export const mailboxAddressSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(254)
+  .regex(/^[^\s@]+@[^\s@]+$/, "Enter an address in the form name@host")
+  .transform((value) => value.toLowerCase());
+
 export const imapConnectionSchema = z.object({
   provider: z.literal("IMAP"),
   displayName: z.string().trim().min(1).max(120),
-  emailAddress: z
-    .string()
-    .trim()
-    .email()
-    .transform((value) => value.toLowerCase()),
+  emailAddress: mailboxAddressSchema,
 
   imapHost: z.string().trim().min(1, "IMAP host is required"),
   imapPort: z.coerce.number().int().min(1).max(65535).default(993),
