@@ -64,7 +64,7 @@ export default function RegisterPage(): React.JSX.Element {
         householdName: householdName.trim() || undefined,
       });
       saveSession(auth);
-      router.push("/mail");
+      router.push("/home");
     } catch (caught) {
       setError(
         caught instanceof ApiRequestError

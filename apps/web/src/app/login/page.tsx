@@ -39,7 +39,7 @@ export default function LoginPage(): React.JSX.Element {
     try {
       const auth = await authApi.login({ email, password });
       saveSession(auth);
-      router.push("/mail");
+      router.push("/home");
     } catch (caught) {
       setError(
         caught instanceof ApiRequestError
