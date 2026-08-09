@@ -8,6 +8,7 @@ import type {
   RegisterInput,
   TestConnectionInput,
 } from "@ledgr/contracts";
+import { refreshAccessToken } from "./token-refresh";
 
 /**
  * Client for the Core API.
@@ -48,7 +49,10 @@ function authHeader(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+/** Endpoints that must never trigger a refresh — refreshing them is circular. */
+const NO_REFRESH = ["/auth/login", "/auth/register", "/auth/refresh", "/auth/logout"];
+
+async function request<T>(path: string, init: RequestInit = {}, isRetry = false): Promise<T> {
   let response: Response;
 
   try {
@@ -68,6 +72,15 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       "NETWORK_ERROR",
       "Couldn't reach the server. Check that the API is running.",
     );
+  }
+
+  // Access tokens last 15 minutes. Without this, every page silently breaks
+  // once that elapses — which is exactly what happened before it existed.
+  // Retried once only: a second 401 means the session is genuinely over, and
+  // retrying again would loop.
+  if (response.status === 401 && !isRetry && !NO_REFRESH.includes(path)) {
+    const token = await refreshAccessToken(API_URL);
+    if (token) return request<T>(path, init, true);
   }
 
   if (response.status === 204) return undefined as T;

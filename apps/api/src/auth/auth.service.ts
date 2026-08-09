@@ -227,6 +227,29 @@ export class AuthService {
       });
     }
 
+    // Claim the token atomically BEFORE issuing anything.
+    //
+    // The `revokedAt` check above is a read, and a read followed by a separate
+    // write is a race: several concurrent requests can all observe the token as
+    // live and all succeed, which silently defeats reuse detection — exactly
+    // the attack it exists to catch. This conditional update lets the database
+    // pick a single winner; `count === 0` means someone else already claimed it.
+    const claimed = await this.prisma.client.refreshToken.updateMany({
+      where: { id: stored.id, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+
+    if (claimed.count === 0) {
+      this.logger.warn(
+        `Concurrent or replayed refresh for user ${stored.userId}. Revoking all sessions.`,
+      );
+      await this.revokeAllForUser(stored.userId);
+      throw new UnauthorizedException({
+        code: ErrorCodes.TOKEN_REUSE_DETECTED,
+        message: "This session was already used. For safety, all sessions have been signed out.",
+      });
+    }
+
     const session = await this.issueSession(
       {
         id: stored.user.id,
@@ -239,12 +262,11 @@ export class AuthService {
       context,
     );
 
+    // Record the successor for the audit trail. The revocation itself already
+    // happened above, so a crash here cannot leave the old token usable.
     await this.prisma.client.refreshToken.update({
       where: { id: stored.id },
-      data: {
-        revokedAt: new Date(),
-        replacedById: session.refreshTokenId,
-      },
+      data: { replacedById: session.refreshTokenId },
     });
 
     return session.response;
