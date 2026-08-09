@@ -5,6 +5,8 @@ import type {
   ImapConnectionInput,
   LoginInput,
   MailAccountSummary,
+  MailFolderSummary,
+  MessageListItem,
   RegisterInput,
   TestConnectionInput,
 } from "@ledgr/contracts";
@@ -111,7 +113,45 @@ export const mailApi = {
     request("/mail/accounts", { method: "POST", body: JSON.stringify(input) }),
 
   disconnect: (id: string): Promise<void> => request(`/mail/accounts/${id}`, { method: "DELETE" }),
+
+  /** Pulls folders and new messages. Safe to re-run — it continues from a cursor. */
+  sync: (id: string): Promise<SyncResult> =>
+    request(`/mail/accounts/${id}/sync`, { method: "POST" }),
+
+  folders: (accountId?: string): Promise<MailFolderSummary[]> =>
+    request(`/mail/folders${accountId ? `?accountId=${accountId}` : ""}`),
+
+  messages: (params: { folderId?: string; limit?: number } = {}): Promise<MessageListItem[]> => {
+    const query = new URLSearchParams();
+    if (params.folderId) query.set("folderId", params.folderId);
+    if (params.limit) query.set("limit", String(params.limit));
+    const suffix = query.toString();
+    return request(`/mail/messages${suffix ? `?${suffix}` : ""}`);
+  },
+
+  message: (id: string): Promise<MessageDetail> => request(`/mail/messages/${id}`),
+
+  markRead: (id: string, read: boolean): Promise<void> =>
+    request(`/mail/messages/${id}/read`, { method: "PATCH", body: JSON.stringify({ read }) }),
 };
+
+/** Mirrors SyncResult in the API. */
+export interface SyncResult {
+  foldersDiscovered: number;
+  foldersSynced: number;
+  messagesStored: number;
+  hasMore: boolean;
+  errors: string[];
+}
+
+/** Mirrors MessageDetail in the API. */
+export interface MessageDetail extends MessageListItem {
+  bodyText: string | null;
+  bodyHtml: string | null;
+  to: { name: string; address: string }[];
+  cc: { name: string; address: string }[];
+  folderId: string | null;
+}
 
 export const authApi = {
   register: (input: RegisterInput): Promise<AuthResponse> =>
