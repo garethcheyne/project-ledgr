@@ -78,6 +78,33 @@ services:
       "
     restart: "no"
 
+  # Throwaway IMAP/SMTP server for developing and testing the mail adapter.
+  # Not started by default — bring it up explicitly:
+  #   docker compose --profile dev up -d greenmail
+  #
+  # Unit tests can't catch what actually goes wrong with IMAP: flag semantics,
+  # UID behaviour, MIME round-tripping, whether sent mail gets filed. Those only
+  # surface against something that really speaks the protocol.
+  #
+  # The mail integration tests skip themselves when this isn't running, so
+  # `pnpm test` stays green without it.
+  greenmail:
+    image: greenmail/standalone:2.1.0
+    profiles: ["dev"]
+    restart: "no"
+    environment:
+      # hostname=0.0.0.0 is required: GreenMail otherwise binds the container's
+      # loopback and the published ports go nowhere.
+      GREENMAIL_OPTS: >-
+        -Dgreenmail.setup.test.smtp
+        -Dgreenmail.setup.test.imap
+        -Dgreenmail.hostname=0.0.0.0
+        -Dgreenmail.users=gareth:testpass@localhost
+        -Dgreenmail.verbose
+    ports:
+      - "3143:3143"
+      - "3025:3025"
+
   # One-shot: applies migrations before api/worker start, so they never boot
   # against a schema that hasn't caught up.
   migrate:
