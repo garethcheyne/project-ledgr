@@ -6,7 +6,7 @@
  * See docs/adr/0002-three-layer-architecture.md.
  */
 export { createPrismaClient } from "./client.js";
-export type { LedgrPrismaClient, PrismaClientOptions } from "./client.js";
+export type { LedgrPrismaClient, PrismaClientOptions, PrismaTransactionClient } from "./client.js";
 
 // Model types and enums, re-exported so consumers never reach into
 // ../generated directly.

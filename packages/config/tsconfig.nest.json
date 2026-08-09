@@ -2,11 +2,18 @@
   "$schema": "https://json.schemastore.org/tsconfig",
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "module": "CommonJS",
-    "moduleResolution": "Node",
+    // NodeNext (not "Node"/node10) so `./foo.js` specifiers resolve to foo.ts.
+    // Emit is still CommonJS because the Nest apps' package.json omits
+    // "type": "module" — NodeNext picks the format from the nearest manifest.
+    // CommonJS matters here: Nest's DI and decorator metadata are far
+    // better-trodden under CJS than ESM.
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "isolatedModules": false,
+    // DI-injected properties and DTO fields are assigned by the framework, not
+    // in a constructor.
     "strictPropertyInitialization": false,
     "target": "ES2023",
     "lib": ["ES2023"]

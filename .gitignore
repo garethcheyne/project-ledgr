@@ -48,3 +48,7 @@ copilot-usage-*.json
 # Local scratch
 tmp/
 scratch/
+
+# Next.js regenerates these on every `next dev`
+apps/web/AGENTS.md
+apps/web/CLAUDE.md

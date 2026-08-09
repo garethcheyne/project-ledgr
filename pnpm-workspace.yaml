@@ -2,10 +2,15 @@ packages:
   - "apps/*"
   - "packages/*"
 
-# pnpm 10 blocks lifecycle scripts by default. These four genuinely need theirs:
-# Prisma fetches/prepares its engines, esbuild installs its platform binary.
+# pnpm 10 blocks lifecycle scripts by default. These genuinely need theirs:
+# Prisma prepares its engines, esbuild installs its platform binary, argon2
+# compiles a native addon.
+#
+# @scarf/scarf is deliberately absent — it is install-time analytics, not a
+# build step, and nothing breaks without it.
 onlyBuiltDependencies:
   - "@prisma/client"
   - "@prisma/engines"
+  - argon2
   - esbuild
   - prisma

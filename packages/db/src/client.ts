@@ -40,3 +40,16 @@ export function createPrismaClient(options: PrismaClientOptions = {}) {
 }
 
 export type LedgrPrismaClient = ReturnType<typeof createPrismaClient>;
+
+/**
+ * The client handed to an interactive `$transaction` callback.
+ *
+ * Same model methods as the full client, minus the connection- and
+ * transaction-level ones — you cannot open a transaction inside a transaction.
+ * Exported so services can accept "either the client or a transaction" without
+ * each one re-deriving this type.
+ */
+export type PrismaTransactionClient = Omit<
+  LedgrPrismaClient,
+  "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends"
+>;
