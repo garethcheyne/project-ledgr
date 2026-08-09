@@ -25,7 +25,7 @@ const envSchema = z.object({
 
   LEDGR_ENCRYPTION_KEY: z.string().min(1, "LEDGR_ENCRYPTION_KEY is required"),
 
-  CORS_ORIGINS: z.string().default("http://localhost:3000"),
+  CORS_ORIGINS: z.string().default("http://localhost:5750"),
   PUBLIC_URL: z.string().default("http://localhost:3001"),
 
   S3_ENDPOINT: z.string().default("http://localhost:9000"),

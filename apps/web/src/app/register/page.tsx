@@ -13,7 +13,7 @@ import {
   Spinner,
   makeStyles,
   tokens,
-} from "@fluentui/react-components";
+} from "../../components/ui";
 import { ApiRequestError, authApi } from "../../lib/api-client";
 import { saveSession } from "../../lib/session";
 import { AuthShell } from "../../components/auth-shell";

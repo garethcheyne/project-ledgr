@@ -117,7 +117,7 @@ echo "JWT_REFRESH_SECRET=$(openssl rand -base64 48)" >> .env
 docker compose up --build
 ```
 
-Then open <http://localhost:3000>.
+Then open <http://localhost:5750>.
 
 The `ANTHROPIC_API_KEY` in `.env` is optional — leave it blank and everything works except AI extraction. OCR still runs and stores the raw text for manual entry.
 

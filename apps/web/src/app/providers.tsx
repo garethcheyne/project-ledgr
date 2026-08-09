@@ -8,8 +8,8 @@ import {
   RendererProvider,
   createDOMRenderer,
   renderToStyleElements,
-  webLightTheme,
 } from "@fluentui/react-components";
+import { ThemeProvider, useTheme } from "./theme-provider";
 
 /**
  * Fluent UI + Griffel with App Router SSR.
@@ -29,8 +29,24 @@ export function Providers({ children }: { children: React.ReactNode }): React.JS
   return (
     <RendererProvider renderer={renderer}>
       <SSRProvider>
-        <FluentProvider theme={webLightTheme}>{children}</FluentProvider>
+        <ThemeProvider>
+          <ThemedFluentProvider>{children}</ThemedFluentProvider>
+        </ThemeProvider>
       </SSRProvider>
     </RendererProvider>
+  );
+}
+
+/** Separate component so it can call useTheme, which needs ThemeProvider above it. */
+function ThemedFluentProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
+  const { theme } = useTheme();
+
+  // Fluent's theme tokens only apply inside this provider, so it has to fill
+  // the viewport — otherwise the page background stays the browser default and
+  // dark mode shows a white margin.
+  return (
+    <FluentProvider theme={theme} style={{ minHeight: "100vh" }}>
+      {children}
+    </FluentProvider>
   );
 }

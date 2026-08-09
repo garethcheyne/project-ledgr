@@ -121,7 +121,7 @@ services:
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is required — openssl rand -base64 48}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required — openssl rand -base64 48}
       LEDGR_ENCRYPTION_KEY: ${LEDGR_ENCRYPTION_KEY:?LEDGR_ENCRYPTION_KEY is required — openssl rand -base64 32. Back it up separately from your data, or your backups are unreadable.}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5750}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
@@ -187,9 +187,9 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: ${NODE_ENV:-production}
-      PORT: 3000
+      PORT: 5750
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "${WEB_PORT:-5750}:5750"
 
 volumes:
   postgres-data:

@@ -1,6 +1,7 @@
 "use client";
 
-import { makeStyles, tokens, Title2, Body1 } from "@fluentui/react-components";
+import { makeStyles, tokens, Title2, Body1 } from "./ui";
+import { ThemeToggle } from "./theme-toggle";
 
 const useStyles = makeStyles({
   page: {
@@ -9,6 +10,7 @@ const useStyles = makeStyles({
     // Single column on small screens; brand panel appears alongside from
     // 900px, where there's room for it without squeezing the form.
     gridTemplateColumns: "1fr",
+    backgroundColor: tokens.colorNeutralBackground1,
     "@media (min-width: 900px)": {
       gridTemplateColumns: "minmax(0, 5fr) minmax(0, 7fr)",
     },
@@ -42,10 +44,20 @@ const useStyles = makeStyles({
   },
   formSide: {
     display: "flex",
+    flexDirection: "column",
+    backgroundColor: tokens.colorNeutralBackground1,
+  },
+  topBar: {
+    display: "flex",
+    justifyContent: "flex-end",
+    padding: "12px 16px",
+  },
+  formArea: {
+    flex: 1,
+    display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    padding: "32px 24px",
-    backgroundColor: tokens.colorNeutralBackground1,
+    padding: "0 24px 48px",
   },
   formCard: {
     width: "100%",
@@ -112,12 +124,18 @@ export function AuthShell({
       </aside>
 
       <main className={styles.formSide}>
-        <div className={styles.formCard}>
-          <header className={styles.header}>
-            <Title2 as="h1">{title}</Title2>
-            <Body1 className={styles.footnote}>{subtitle}</Body1>
-          </header>
-          {children}
+        <div className={styles.topBar}>
+          <ThemeToggle />
+        </div>
+
+        <div className={styles.formArea}>
+          <div className={styles.formCard}>
+            <header className={styles.header}>
+              <Title2 as="h1">{title}</Title2>
+              <Body1 className={styles.footnote}>{subtitle}</Body1>
+            </header>
+            {children}
+          </div>
         </div>
       </main>
     </div>
